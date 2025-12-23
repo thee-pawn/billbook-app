@@ -28,6 +28,8 @@ billbook-app/
    npm run build-frontend
    ```
    This creates the production build in `frontend/dist/`.
+   
+   > **Note for Windows ARM64 users:** If you encounter a Rollup/Vite error about missing DLLs, you may need to install the [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.arm64.exe). Alternatively, ensure `frontend/node_modules` is properly installed with `cd frontend && npm install`.
 
 3. **Build the backend:**
    ```bash
