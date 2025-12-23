@@ -9,7 +9,7 @@
     "dev": "npm run build-backend && npm run dev:electron",
     "dev:electron": "electron . --dev",
     "dev:frontend": "cd frontend && npm run dev",
-    "build-frontend": "npm --prefix frontend install && npm --prefix frontend run build",
+    "build-frontend": "node build-frontend.js",
     "build-backend": "cd backend && npm install && npx tsc",
     "install-playwright-browsers": "cd backend && npx playwright install chromium --with-deps || echo 'Playwright browsers installation completed'",
     "download-windows-browsers": "node download-windows-browsers.js || echo 'Windows browser download attempted'",
