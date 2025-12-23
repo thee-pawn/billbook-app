@@ -6,9 +6,11 @@
   "scripts": {
     "install-all": "npm install && cd frontend && npm install && cd ../backend && npm install",
     "start": "electron .",
-    "dev": "electron . --dev",
+    "dev": "npm run build-backend && npm run dev:electron",
+    "dev:electron": "electron . --dev",
+    "dev:frontend": "cd frontend && npm run dev",
     "build-frontend": "cd frontend && npm run build",
-    "build-backend": "cd backend && npm install && npm run build",
+    "build-backend": "cd backend && npm install && npx tsc",
     "install-playwright-browsers": "cd backend && npx playwright install chromium --with-deps || echo 'Playwright browsers installation completed'",
     "download-windows-browsers": "node download-windows-browsers.js || echo 'Windows browser download attempted'",
     "copy-playwright-browsers": "node copy-playwright-browsers.js",

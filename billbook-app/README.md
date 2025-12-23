@@ -36,14 +36,28 @@ billbook-app/
    This compiles the TypeScript backend code to JavaScript in `backend/dist/`.
 
 4. **Run in development mode:**
+   
+   **Option A: Use built frontend (recommended for quick start):**
    ```bash
-   npm run dev
+   npm run build-frontend && npm run build-backend && npm run dev
    ```
-   Opens Electron with DevTools enabled.
-   > **Note:** Make sure both frontend and backend are built before running, or build them first:
-   > ```bash
-   > npm run build-frontend && npm run build-backend && npm run dev
-   > ```
+   This builds both frontend and backend, then starts Electron.
+   
+   **Option B: Use frontend dev server (for hot reload):**
+   
+   In **Terminal 1** (start frontend dev server):
+   ```bash
+   npm run dev:frontend
+   ```
+   This starts the Vite dev server on `http://localhost:5173`
+   
+   In **Terminal 2** (start Electron):
+   ```bash
+   npm run build-backend && npm run dev:electron
+   ```
+   This builds the backend and starts Electron, which will connect to the dev server.
+   
+   > **Note:** The `npm run dev` command automatically builds the backend. For frontend, either build it first or start the dev server separately.
 
 5. **Run in production mode:**
    ```bash
