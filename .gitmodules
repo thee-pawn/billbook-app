@@ -1,6 +1,0 @@
-[submodule "frontend"]
-	path = billbook-app/frontend
-	url = https://github.com/thee-pawn/billbook-frontend.git
-[submodule "billbook-app/backend"]
-	path = billbook-app/backend
-	url = https://github.com/thee-pawn/whatsapp-automation.git
