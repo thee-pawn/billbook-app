@@ -1,0 +1,33 @@
+{
+  "name": "billbook-app",
+  "version": "1.0.1",
+  "description": "BillBook – self-contained, auto-updating desktop application",
+  "main": "electron/main.js",
+  "author": "BillBook Team",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "dev:fresh": "npm run build:frontend && npm run build:backend && electron .",
+    "build:frontend": "cd ../billbook-fe && npm run build",
+    "build:backend": "esbuild ../whatsapp_automation/src/server.ts --bundle --platform=node --target=node18 --outfile=../whatsapp_automation/dist/server.js --external:playwright --external:playwright-core --external:electron",
+    "build": "npm run build:frontend && npm run build:backend && electron-builder",
+    "build:release": "npm run build:frontend && npm run build:backend && electron-builder --publish never",
+    "release": "npm run build:frontend && npm run build:backend && electron-builder --publish always"
+  },
+  "dependencies": {
+    "electron-log": "^5.1.2",
+    "electron-updater": "^6.1.7"
+  },
+  "devDependencies": {
+    "electron": "^28.0.0",
+    "electron-builder": "^24.9.1",
+    "esbuild": "^0.19.11"
+  },
+  "keywords": [
+    "electron",
+    "billbook",
+    "whatsapp",
+    "desktop"
+  ]
+}

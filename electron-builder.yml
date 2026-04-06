@@ -1,0 +1,108 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# electron-builder configuration
+# Replace the placeholder values (marked with TODO) before your first release.
+# ─────────────────────────────────────────────────────────────────────────────
+
+appId: com.billbook.app            # TODO: change to your company reverse-domain
+productName: BillBookPlus
+
+# ── Auto-update publishing ────────────────────────────────────────────────────
+publish:
+  provider: github
+  owner: thee-pawn
+  repo: billbook-app         # TODO: your GitHub repository name
+
+# ── Files included in the ASAR bundle ────────────────────────────────────────
+# Only ship the thin Electron layer; everything else goes into extraResources.
+files:
+  - electron/**
+  - package.json
+  - "!src/**"
+  - "!**/*.ts"
+  - "!**/*.map"
+
+# ── Extra resources (unpacked alongside the ASAR) ────────────────────────────
+# These are accessible at runtime via process.resourcesPath.
+extraResources:
+  # Pre-built Vite frontend
+  - from: ../billbook-fe/dist
+    to: frontend
+    filter:
+      - "**/*"
+
+  # esbuild-bundled WhatsApp automation backend
+  - from: ../whatsapp_automation/dist
+    to: backend/dist
+    filter:
+      - "**/*"
+
+  # Playwright npm packages (JS only — no browser binaries here).
+  # On the user's very first launch a setup window downloads Chromium into
+  # the app's userData folder automatically (see electron/setup.js).
+  - from: ../whatsapp_automation/node_modules/playwright
+    to: backend/node_modules/playwright
+  - from: ../whatsapp_automation/node_modules/playwright-core
+    to: backend/node_modules/playwright-core
+
+# ── Build targets ─────────────────────────────────────────────────────────────
+mac:
+  icon: build/icon.icns
+  category: public.app-category.business
+  # Build one arch per run to avoid parallel DMG mount-point collisions.
+  # Use --x64 for Intel Mac or --arm64 for Apple Silicon: npm run build -- --mac --x64
+  target:
+    - target: dmg
+  gatekeeperAssess: false
+  hardenedRuntime: false
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
+win:
+  icon: build/icon.ico
+  verifyUpdateCodeSignature: false
+  requestedExecutionLevel: asInvoker
+  target:
+    - target: nsis
+      arch:
+        - x64
+        - ia32
+  artifactName: "${productName}-${version}-${arch}-Setup.${ext}"
+
+linux:
+  icon: build/icon.png
+  category: Office
+  target:
+    - target: AppImage
+
+# ── NSIS installer options (Windows) ─────────────────────────────────────────
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  allowElevation: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: BillBook
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  deleteAppDataOnUninstall: false
+  runAfterFinish: false
+
+# ── DMG options (macOS) ───────────────────────────────────────────────────────
+dmg:
+  title: BillBook Installer
+  icon: build/icon.icns
+  window:
+    width: 600
+    height: 400
+  contents:
+    - x: 150
+      y: 200
+      type: file
+    - x: 450
+      y: 200
+      type: link
+      path: /Applications
+
+# ── Output directory ──────────────────────────────────────────────────────────
+directories:
+  output: dist
+  buildResources: build

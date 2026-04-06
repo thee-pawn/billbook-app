@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>BillBookPlus – Loading</title>
+  <link rel="stylesheet" href="loading.css">
+</head>
+<body>
+  <div class="loading-screen">
+    <div class="spinner" aria-hidden="true"></div>
+    <h1 class="loading-title">BillBookPlus</h1>
+    <p class="loading-text" id="loading-message">Loading</p>
+  </div>
+  <script>
+    (function() {
+      var el = document.getElementById('loading-message');
+      function setMessage(text, isError) {
+        if (!el) return;
+        el.textContent = text || 'Loading';
+        el.className = 'loading-text' + (isError ? ' loading-error' : '');
+      }
+      if (typeof window.electronAPI !== 'undefined') {
+        if (window.electronAPI.onInitProgress) {
+          window.electronAPI.onInitProgress(function(p) {
+            if (el && p.message) {
+              var isError = p.message.indexOf('Error') === 0 || p.message.indexOf('Error fetching') !== -1;
+              setMessage(p.message, isError);
+            }
+          });
+        }
+        if (window.electronAPI.onInitError) {
+          window.electronAPI.onInitError(function(err) {
+            setMessage(err ? ('Error: ' + err) : 'An error occurred', true);
+          });
+        }
+      }
+    })();
+  </script>
+</body>
+</html>

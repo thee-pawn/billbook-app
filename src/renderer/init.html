@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Initializing BillBook+</title>
+  <link rel="stylesheet" href="init.css">
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1 class="title">BillBook+</h1>
+      <p class="subtitle">Setting up your application...</p>
+    </div>
+
+    <div class="progress-section">
+      <div class="stage-indicator">
+        <div class="stage" data-stage="dependencies">
+          <div class="stage-icon">📦</div>
+          <div class="stage-label">Dependencies</div>
+        </div>
+        <div class="stage-divider"></div>
+        <div class="stage" data-stage="repositories">
+          <div class="stage-icon">🔄</div>
+          <div class="stage-label">Repositories</div>
+        </div>
+        <div class="stage-divider"></div>
+        <div class="stage" data-stage="services">
+          <div class="stage-icon">🚀</div>
+          <div class="stage-label">Services</div>
+        </div>
+      </div>
+
+      <div class="progress-bar-container">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-text">
+          <span id="progressPercent">0%</span>
+        </div>
+      </div>
+
+      <div class="status-message" id="statusMessage">
+        Initializing...
+      </div>
+
+      <div class="time-estimate" id="timeEstimate">
+        Estimated time: Calculating...
+      </div>
+    </div>
+
+    <div class="logs-section">
+      <div class="logs-header" id="logsHeader">
+        <span>Detailed Logs</span>
+        <button class="logs-toggle" id="logsToggle">Show ▼</button>
+      </div>
+      <div class="logs-content" id="logsContent">
+        <div class="logs-scroll" id="logsScroll">
+          <div class="log-entry">Starting initialization...</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="error-section" id="errorSection" style="display: none;">
+      <div class="error-icon">⚠️</div>
+      <div class="error-title">Initialization Failed</div>
+      <div class="error-message" id="errorMessage"></div>
+      <div class="error-buttons">
+        <button class="retry-button" id="retryButton">Retry</button>
+        <button class="restart-button" id="restartButton" style="display: none;">Restart App</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="init.js"></script>
+</body>
+</html>

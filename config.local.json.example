@@ -1,0 +1,19 @@
+{
+  "githubToken": "your_github_personal_access_token_here",
+  "backendRepoUrl": "https://github.com/your-org/backend.git",
+  "frontendRepoUrl": "https://github.com/your-org/frontend.git",
+  "backendBuildCommand": "npm run build",
+  "backendStartCommand": "npm run start",
+  "frontendBuildCommand": "npm run build",
+  "frontendStartCommand": "npm run start",
+  "appName": "BillBook Application",
+  "appId": "com.billbook.app",
+  "backendPort": 3001,
+  "frontendPort": 3000,
+  "initialBranch": "main",
+  "frontendEnv": {
+    "VITE_CUSTOM_API_KEY": "your-api-key-here",
+    "VITE_FEATURE_FLAG": "true",
+    "VITE_ENVIRONMENT": "production"
+  }
+}

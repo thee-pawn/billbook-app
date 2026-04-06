@@ -1,0 +1,34 @@
+# Dependencies
+node_modules/
+src/electron/node_modules/
+
+# Build outputs
+dist/
+src/electron/dist-electron/
+src/electron/dist-electron/**/*.js
+src/electron/dist-electron/**/*.js.map
+
+# Playwright browser binaries — downloaded at build time, never committed
+playwright-browsers/
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment files
+.env
+.env.local
+config.local.json
+
+# Electron
+out/

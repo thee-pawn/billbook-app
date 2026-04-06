@@ -1,0 +1,17 @@
+{
+  "name": "billbook-electron",
+  "version": "1.0.0",
+  "description": "Electron main process",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist-electron"
+  },
+  "dependencies": {
+    "electron": "^28.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.6",
+    "typescript": "^5.3.3"
+  }
+}

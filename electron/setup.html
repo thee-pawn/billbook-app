@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline';" />
+  <title>BillBook Setup</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      -webkit-app-region: drag; /* make the frameless window draggable */
+      overflow: hidden;
+    }
+
+    .card {
+      width: 420px;
+      text-align: center;
+      padding: 0 24px;
+    }
+
+    /* ── Logo ── */
+    .logo {
+      width: 72px;
+      height: 72px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 28px;
+      box-shadow: 0 8px 24px rgba(59, 130, 246, 0.35);
+    }
+    .logo svg { width: 36px; height: 36px; fill: #fff; }
+
+    /* ── Heading ── */
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      margin-bottom: 6px;
+    }
+    .subtitle {
+      font-size: 13.5px;
+      color: #64748b;
+      line-height: 1.5;
+      margin-bottom: 36px;
+    }
+
+    /* ── Progress track ── */
+    .progress-track {
+      height: 6px;
+      background: #1e293b;
+      border-radius: 99px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 4%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, #3b82f6, #60a5fa);
+      transition: width 0.5s cubic-bezier(.4,0,.2,1),
+                  background 0.4s ease;
+    }
+    .progress-fill.indeterminate {
+      animation: slide 1.8s ease-in-out infinite;
+      width: 40% !important;
+    }
+    @keyframes slide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+    .progress-fill.done    { background: #22c55e; width: 100% !important; animation: none; }
+    .progress-fill.errored { background: #ef4444; width: 100% !important; animation: none; }
+
+    /* ── Status line ── */
+    .status {
+      font-size: 12.5px;
+      color: #475569;
+      min-height: 18px;
+      transition: color 0.3s;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .status.done    { color: #22c55e; }
+    .status.errored { color: #f87171; }
+
+    /* ── Footer note ── */
+    .note {
+      margin-top: 32px;
+      font-size: 11.5px;
+      color: #334155;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+
+    <!-- BillBook logomark -->
+    <div class="logo">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0
+                 2-2V5a2 2 0 0 0-2-2zm-7 3a3 3 0 1 1 0 6 3 3 0 0 1
+                 0-6zm6 12H6v-.6C6 15.1 8.7 13 12 13s6 2.1 6 4.4V18z"/>
+      </svg>
+    </div>
+
+    <h1>Setting up BillBook</h1>
+    <p class="subtitle">Downloading the browser engine required for WhatsApp<br>automation. This happens once and takes about a minute.</p>
+
+    <div class="progress-track">
+      <div class="progress-fill indeterminate" id="bar"></div>
+    </div>
+
+    <p class="status" id="status">Initialising…</p>
+
+    <p class="note">Please stay connected to the internet during setup.</p>
+  </div>
+
+  <script>
+    const bar    = document.getElementById('bar');
+    const status = document.getElementById('status');
+
+    window.setup.onProgress((msg) => {
+      // Show the latest meaningful line from playwright's output.
+      if (msg) status.textContent = msg;
+    });
+
+    window.setup.onComplete(() => {
+      bar.className    = 'progress-fill done';
+      status.className = 'status done';
+      status.textContent = '✓  Setup complete — launching BillBook…';
+    });
+
+    window.setup.onError((err) => {
+      bar.className    = 'progress-fill errored';
+      status.className = 'status errored';
+      status.textContent = 'Setup failed: ' + err + ' (will retry on next launch)';
+    });
+  </script>
+</body>
+</html>
