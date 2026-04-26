@@ -5,7 +5,7 @@ const path = require('path');
 const log = require('electron-log');
 const { checkForUpdates } = require('./updater');
 const { startBackend, stopBackend } = require('./backend');
-const { isSetupComplete, installBrowsers } = require('./setup');
+const { needsSetup, ensurePlaywrightBrowsers } = require('./setup');
 
 let mainWindow = null;
 
@@ -42,7 +42,7 @@ function createMainWindow() {
 /**
  * Shows a frameless setup window that downloads Playwright's Chromium binary.
  * Resolves once the download finishes (or fails — startup is never blocked).
- * This window is shown exactly once; subsequent launches skip straight to the app.
+ * Shown when dependencies are missing or incomplete; skipped when everything is ready.
  */
 function runFirstTimeSetup() {
   return new Promise((resolve) => {
@@ -65,7 +65,7 @@ function runFirstTimeSetup() {
     setupWindow.once('ready-to-show', () => {
       setupWindow.show();
 
-      installBrowsers((msg) => {
+      ensurePlaywrightBrowsers((msg) => {
         // Forward each output line to the renderer for display.
         if (!setupWindow.isDestroyed()) {
           setupWindow.webContents.send('setup:progress', msg);
@@ -100,10 +100,10 @@ function runFirstTimeSetup() {
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
-  // Step 1 — First-time setup: download browser binaries (skipped on every
-  //           subsequent launch once the marker file exists).
-  if (!isSetupComplete()) {
-    log.info('[Main] First launch detected — running setup.');
+  // Step 1 — Dependency setup: verify Node runtime (embedded when packaged),
+  //           bundled Playwright, then download Chromium if needed.
+  if (needsSetup()) {
+    log.info('[Main] Setup required — checking runtime and Playwright browsers.');
     await runFirstTimeSetup();
   }
 

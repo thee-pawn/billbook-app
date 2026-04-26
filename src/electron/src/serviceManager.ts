@@ -4,8 +4,11 @@ import * as path from 'path';
 import * as net from 'net';
 import * as http from 'http';
 import * as os from 'os';
+import { app, utilityProcess } from 'electron';
 import { PathResolver } from './pathResolver';
 import { AppConfig } from './config';
+
+type UtilityProcess = ReturnType<typeof utilityProcess.fork>;
 
 /** Max time to wait for a process to exit before force-killing (ms) */
 const PROCESS_EXIT_TIMEOUT_MS = 5000;
@@ -36,12 +39,40 @@ export interface ProgressCallback {
 export class ServiceManager {
   private pathResolver: PathResolver;
   private config: AppConfig;
+
+  // ── Dev-mode processes (git-cloned repos) ─────────────────────────────────
   private backendProcess?: ChildProcess;
   private frontendProcess?: ChildProcess;
+
+  // ── Packaged-mode processes (bundled extraResources) ──────────────────────
+  /**
+   * Backend subprocess started via utilityProcess.fork() in packaged mode.
+   * Uses Electron's own bundled Node.js — no system Node.js required on the
+   * customer's machine.
+   */
+  private bundledBackendProcess?: UtilityProcess;
+  /** Lightweight HTTP server serving the pre-built Vite static frontend */
+  private staticFrontendServer?: http.Server;
+
+  // ── Runtime ports (may differ from config if preferred port was busy) ──────
+  /** Actual port the backend is listening on (0 = not started yet) */
+  private runtimeBackendPort = 0;
+  /** Actual port the static frontend server is listening on (0 = not started yet) */
+  private runtimeFrontendPort = 0;
   
   constructor(pathResolver: PathResolver, config: AppConfig) {
     this.pathResolver = pathResolver;
     this.config = config;
+  }
+
+  /** Returns the actual backend port (preferred config port if not yet started). */
+  getBackendPort(): number {
+    return this.runtimeBackendPort || this.config.backendPort;
+  }
+
+  /** Returns the actual frontend port (preferred config port if not yet started). */
+  getFrontendPort(): number {
+    return this.runtimeFrontendPort || this.config.frontendPort;
   }
   
   /**
@@ -64,6 +95,26 @@ export class ServiceManager {
     });
   }
   
+  /**
+   * Find a free TCP port starting from `preferred`.
+   * Scans preferred → preferred+99 first, then falls back to an OS-assigned
+   * ephemeral port so startup never blocks on a permanently occupied port.
+   */
+  async findFreePort(preferred: number): Promise<number> {
+    for (let p = preferred; p < preferred + 100; p++) {
+      if (await this.isPortAvailable(p)) return p;
+    }
+    return new Promise<number>((resolve, reject) => {
+      const s = net.createServer();
+      s.listen(0, '127.0.0.1', () => {
+        const addr = s.address() as net.AddressInfo;
+        const port = addr.port;
+        s.close(() => resolve(port));
+      });
+      s.on('error', reject);
+    });
+  }
+
   /**
    * Wait for a port to become active
    */
@@ -454,21 +505,15 @@ export class ServiceManager {
       throw new Error(`No package.json found in ${projectPath}`);
     }
     
-    let portAvailable = await this.isPortAvailable(port);
-    if (!portAvailable) {
-      console.warn(`[V2] Port ${port} in use; attempting to free it for ${serviceName}...`);
-      if (os.platform() === 'win32') {
-        this.killProcessesOnPort(port);
-        await new Promise((r) => setTimeout(r, 2000));
-      }
-      const waitDeadline = Date.now() + 15000;
-      while (!portAvailable && Date.now() < waitDeadline) {
-        await new Promise((r) => setTimeout(r, 1000));
-        portAvailable = await this.isPortAvailable(port);
-      }
-      if (!portAvailable) {
-        throw new Error(`Port ${port} is already in use. Close any other instance of this app or the process using the port, then try again.`);
-      }
+    // If the port is still occupied (race condition between findFreePort and now),
+    // just scan for the next free one instead of killing whatever holds it.
+    // The server process has its own findFreePort fallback and will announce the
+    // actual port it binds to via stdout (BILLBOOK_BACKEND_PORT=<port>), so
+    // waitForPort will automatically track the right port.
+    if (!(await this.isPortAvailable(port))) {
+      console.warn(`[ServiceManager] Port ${port} no longer free (race condition) — finding next free port for ${serviceName}...`);
+      port = await this.findFreePort(port + 1);
+      console.log(`[ServiceManager] ${serviceName} will use port ${port}`);
     }
 
     // Replace $PORT placeholder with actual port value
@@ -520,7 +565,29 @@ export class ServiceManager {
     // Log output to file
     const logPath = this.pathResolver.getLogFilePath(serviceName);
     const logStream = fs.createWriteStream(logPath, { flags: 'a' });
-    
+
+    // Watch stdout for a port announcement emitted by the service itself.
+    // The whatsapp_automation server writes `BILLBOOK_BACKEND_PORT=<port>` to
+    // stdout when it successfully binds — this handles the case where the server
+    // chose a different port because the preferred one was busy.
+    let announcedPort: number | null = null;
+    const announcedPortPromise = new Promise<number | null>((resolve) => {
+      const onData = (chunk: Buffer) => {
+        const text = chunk.toString();
+        const match = text.match(/BILLBOOK_BACKEND_PORT=(\d+)/);
+        if (match) {
+          const p = parseInt(match[1], 10);
+          announcedPort = p;
+          resolve(p);
+        }
+      };
+      serviceProcess.stdout?.on('data', onData);
+      // If no announcement arrives within 8 seconds, fall back to the
+      // configured port (e.g. Vite / other services that don't emit the token)
+      setTimeout(() => resolve(null), 8_000);
+    });
+
+    // Now pipe to log file (adding the data listener above doesn't block piping)
     serviceProcess.stdout.pipe(logStream);
     serviceProcess.stderr.pipe(logStream);
     
@@ -533,19 +600,105 @@ export class ServiceManager {
     });
     
     onProgress?.(`${serviceName} starting, waiting for port ${port}...`, 50);
-    
-    // Wait for service to be ready
-    const ready = await this.waitForPort(port, 60000);
-    if (!ready) {
-      serviceProcess.kill();
-      throw new Error(`${serviceName} failed to start on port ${port}`);
+
+    // Resolve the port we actually need to wait for.
+    // If the service announced a different port (e.g. fallback due to conflict),
+    // use that; otherwise use the port Electron chose.
+    const announced = await announcedPortPromise;
+    const effectivePort = announced ?? port;
+
+    if (announced !== null && announced !== port) {
+      console.log(`[ServiceManager] ${serviceName} announced port ${announced} (expected ${port}) — updating runtime port`);
+      if (serviceName === 'backend') this.runtimeBackendPort = announced;
+      if (serviceName === 'frontend') this.runtimeFrontendPort = announced;
     }
     
-    onProgress?.(`${serviceName} started successfully on port ${port}`, 100);
+    // Wait for service to be ready
+    const ready = await this.waitForPort(effectivePort, 60000);
+    if (!ready) {
+      serviceProcess.kill();
+      throw new Error(`${serviceName} failed to start on port ${effectivePort}`);
+    }
+    
+    onProgress?.(`${serviceName} started successfully on port ${effectivePort}`, 100);
     
     return serviceProcess;
   }
   
+  /**
+   * Start the esbuild-bundled backend (server.js) using Electron's own built-in
+   * Node.js runtime via utilityProcess.fork().
+   *
+   * Why not spawn('node', ...)?
+   *   spawn() would call the SYSTEM node binary, which may not exist on the
+   *   customer's machine. utilityProcess.fork() uses the Node.js runtime that
+   *   Electron itself ships with — no external Node.js installation required.
+   *
+   * Available since Electron 22; cwd option available since Electron 28.
+   */
+  private async startBackendWithUtilityProcess(
+    backendDistPath: string,
+    port: number,
+    onProgress?: ProgressCallback,
+  ): Promise<UtilityProcess> {
+    onProgress?.('Starting backend…', 0);
+
+    // If the port is still occupied (race condition between findFreePort and now),
+    // scan for the next free one — never kill whatever holds it.
+    if (!(await this.isPortAvailable(port))) {
+      console.warn(`[Backend] Port ${port} no longer free (race condition) — finding next free port…`);
+      port = await this.findFreePort(port + 1);
+      console.log(`[Backend] Will use port ${port} instead`);
+    }
+
+    const serverScript = path.join(backendDistPath, 'server.js');
+    const logPath = this.pathResolver.getLogFilePath('backend');
+    const logStream = fs.createWriteStream(logPath, { flags: 'a' });
+
+    console.log('[Backend] Starting via utilityProcess.fork():', serverScript);
+
+      const child = utilityProcess.fork(serverScript, [], {
+      // Electron 28+ supports cwd — runs the script in its own directory so
+      // relative requires inside server.js resolve correctly.
+      cwd: backendDistPath,
+      env: {
+        ...process.env,
+        PORT: String(port),
+        NODE_ENV: 'production',
+        // WhatsApp session data (QR code login) — persisted across restarts
+        USER_DATA_DIR: path.join(this.pathResolver.getUserDataPath(), 'whatsapp-session'),
+        // Playwright browser cache — only used if Chrome/Edge not found on system
+        PLAYWRIGHT_BROWSERS_PATH: path.join(
+          this.pathResolver.getUserDataPath(),
+          'chromium-browsers',
+        ),
+      },
+      // 'pipe' lets us capture stdout/stderr for log files
+      stdio: 'pipe',
+      serviceName: 'BillBook-Backend',
+    });
+
+    // Pipe output to log file
+    child.stdout?.pipe(logStream);
+    child.stderr?.pipe(logStream);
+
+    child.on('exit', (code) => {
+      console.log(`[Backend] utilityProcess exited with code ${code}`);
+      logStream.end();
+    });
+
+    onProgress?.(`Waiting for backend on port ${port}…`, 50);
+
+    const ready = await this.waitForPort(port, 60_000);
+    if (!ready) {
+      child.kill();
+      throw new Error(`Backend failed to start on port ${port}. Check logs at: ${logPath}`);
+    }
+
+    onProgress?.(`Backend running on port ${port}`, 100);
+    return child;
+  }
+
   /**
    * V2: Kill process and its entire tree so that all bound ports are released.
    * On Windows uses taskkill /T /F to kill child processes (e.g. node/npm).
@@ -677,8 +830,8 @@ export class ServiceManager {
    * Kills any PIDs found on those ports so they are released.
    */
   async killProcessesOnPortsForExit(): Promise<void> {
-    const backendPort = this.config.backendPort;
-    const frontendPort = this.config.frontendPort;
+    const backendPort = this.getBackendPort();
+    const frontendPort = this.getFrontendPort();
     this.killProcessesOnPort(backendPort);
     this.killProcessesOnPort(frontendPort);
     await new Promise((r) => setTimeout(r, PORT_KILL_WAIT_MS));
@@ -687,17 +840,30 @@ export class ServiceManager {
   }
 
   /**
-   * Fast exit: kill backend and frontend immediately, kill by port, short wait. No port-release loop.
-   * Use this when the user clicks Exit so the app closes in ~1–2 seconds instead of 10–30.
+   * Fast exit: kill backend and frontend immediately, kill by port, short wait.
+   * Use this when the user clicks Exit so the app closes in ~1–2 seconds.
    */
   async stopAllServicesForExit(): Promise<void> {
-    const backendPort = this.config.backendPort;
-    const frontendPort = this.config.frontendPort;
+    const backendPort = this.getBackendPort();
+    const frontendPort = this.getFrontendPort();
     console.log('[V2] Stopping services (fast exit)...');
+
+    // Packaged mode: kill utilityProcess backend + close static HTTP server
+    if (this.bundledBackendProcess) {
+      try { this.bundledBackendProcess.kill(); } catch {}
+      this.bundledBackendProcess = undefined;
+    }
+    if (this.staticFrontendServer) {
+      this.staticFrontendServer.close();
+      this.staticFrontendServer = undefined;
+    }
+
+    // Dev mode: kill child processes
     if (this.frontendProcess) this.killProcessTree(this.frontendProcess);
     if (this.backendProcess) this.killProcessTree(this.backendProcess);
     this.backendProcess = undefined;
     this.frontendProcess = undefined;
+
     await new Promise((r) => setTimeout(r, EXIT_KILL_WAIT_MS));
     this.killProcessesOnPort(frontendPort);
     this.killProcessesOnPort(backendPort);
@@ -707,11 +873,20 @@ export class ServiceManager {
 
   /**
    * V2: Stop all services, ensure process trees are killed and ports are released.
-   * On Windows, also kills by port so 5173 (Vite) and backend port are always freed.
+   * On Windows, also kills by port so the frontend and backend ports are always freed.
    */
   async stopAllServicesAsync(): Promise<void> {
-    const backendPort = this.config.backendPort;
-    const frontendPort = this.config.frontendPort;
+    // Packaged mode: kill utilityProcess backend + close static HTTP server
+    if (this.bundledBackendProcess) {
+      try { this.bundledBackendProcess.kill(); } catch {}
+      this.bundledBackendProcess = undefined;
+    }
+    if (this.staticFrontendServer) {
+      this.staticFrontendServer.close();
+      this.staticFrontendServer = undefined;
+    }
+    const backendPort = this.getBackendPort();
+    const frontendPort = this.getFrontendPort();
 
     console.log('[V2] Stopping services and closing ports...');
     await this.stopServiceAndWait(this.frontendProcess);
@@ -936,32 +1111,174 @@ VITE_FRONTEND_PORT=${this.config.frontendPort}
   }
 
   /**
-   * V2: Start backend process only (no install, no build). Use with startup update check.
+   * Serve the pre-built Vite static files from extraResources/frontend on a local HTTP port.
+   * Used in packaged (production) mode instead of spawning Vite/serve as a child process.
+   * Handles SPA routing by falling back to index.html for unknown paths.
+   */
+  /**
+   * Serve the pre-built Vite static files from extraResources/frontend on a local HTTP port.
+   * Used in packaged (production) mode instead of spawning Vite/serve as a child process.
+   * Handles SPA routing by falling back to index.html for unknown paths.
+   *
+   * index.html responses are modified to inject a tiny inline script that sets
+   * `window.__ELECTRON_CONFIG__` so the frontend can read the actual runtime
+   * backend port without any IPC round-trip.
+   */
+  private startStaticServer(staticDir: string, port: number, backendPort: number): Promise<http.Server> {
+    const MIME: Record<string, string> = {
+      '.html': 'text/html; charset=utf-8',
+      '.js':   'application/javascript',
+      '.mjs':  'application/javascript',
+      '.css':  'text/css',
+      '.json': 'application/json',
+      '.png':  'image/png',
+      '.jpg':  'image/jpeg',
+      '.jpeg': 'image/jpeg',
+      '.gif':  'image/gif',
+      '.svg':  'image/svg+xml',
+      '.ico':  'image/x-icon',
+      '.webp': 'image/webp',
+      '.woff': 'font/woff',
+      '.woff2':'font/woff2',
+      '.ttf':  'font/ttf',
+      '.eot':  'application/vnd.ms-fontobject',
+      '.map':  'application/json',
+    };
+
+    // Injected into every index.html response so the frontend knows the actual
+    // backend port at runtime — works even when the port differs from the default.
+    const configScript = `<script>window.__ELECTRON_CONFIG__=${JSON.stringify({ backendPort })};</script>`;
+
+    return new Promise((resolve, reject) => {
+      const server = http.createServer((req, res) => {
+        const urlPath = (req.url || '/').split('?')[0];
+        let filePath = path.join(staticDir, urlPath);
+
+        // Resolve directories to index.html
+        if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
+          filePath = path.join(staticDir, 'index.html');
+        }
+
+        if (!fs.existsSync(filePath)) {
+          res.writeHead(404, { 'Content-Type': 'text/plain' });
+          res.end('Not found');
+          return;
+        }
+
+        const ext = path.extname(filePath).toLowerCase();
+        const contentType = MIME[ext] || 'application/octet-stream';
+
+        // Cache immutable hashed assets for 1 year; never cache HTML (SPA entry point)
+        const cacheControl = ext === '.html'
+          ? 'no-cache, no-store, must-revalidate'
+          : 'public, max-age=31536000, immutable';
+
+        // Inject runtime config into HTML so the renderer gets the actual ports
+        if (ext === '.html') {
+          try {
+            let html = fs.readFileSync(filePath, 'utf-8');
+            // Prefer injecting right after <head>; fall back to prepending <script>
+            html = html.includes('<head>')
+              ? html.replace('<head>', `<head>${configScript}`)
+              : `${configScript}${html}`;
+            res.setHeader('Content-Type', contentType);
+            res.setHeader('Cache-Control', cacheControl);
+            res.end(html, 'utf-8');
+            return;
+          } catch (err) {
+            console.error('[StaticServer] Failed to inject config into HTML:', err);
+            // Fall through to stream the file as-is
+          }
+        }
+
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Cache-Control', cacheControl);
+
+        const stream = fs.createReadStream(filePath);
+        stream.on('error', () => {
+          res.writeHead(500, { 'Content-Type': 'text/plain' });
+          res.end('Internal server error');
+        });
+        stream.pipe(res);
+      });
+
+      server.on('error', reject);
+      server.listen(port, '127.0.0.1', () => {
+        console.log(`[StaticServer] Serving ${staticDir} on port ${port} (backend port: ${backendPort})`);
+        resolve(server);
+      });
+    });
+  }
+
+  /**
+   * V2: Start backend process only (no install, no build).
+   *
+   * - Packaged: uses utilityProcess.fork() with Electron's own Node.js runtime —
+   *   no system Node.js required on the customer's machine.
+   * - Dev: uses the configured backendStartCommand from the git-cloned repo.
    */
   async startBackendOnly(onProgress?: ProgressCallback): Promise<void> {
-    const backendPath = this.pathResolver.getBackendPath();
     onProgress?.('Starting backend...', 0);
-    this.backendProcess = await this.startService(
-      backendPath,
-      this.config.backendStartCommand,
-      this.config.backendPort,
-      'backend',
-      (msg, percent) => onProgress?.(msg, percent),
-    );
+
+    const port = await this.findFreePort(this.config.backendPort);
+    this.runtimeBackendPort = port;
+    if (port !== this.config.backendPort) {
+      console.log(`[ServiceManager] Backend preferred port ${this.config.backendPort} busy → using ${port}`);
+    }
+
+    if (app.isPackaged) {
+      // Packaged production mode: use Electron's built-in Node.js to run server.js
+      const backendDistPath = this.pathResolver.getBundledBackendPath();
+      this.bundledBackendProcess = await this.startBackendWithUtilityProcess(
+        backendDistPath,
+        port,
+        (msg, percent) => onProgress?.(msg, percent),
+      );
+    } else {
+      // Dev mode: start from the git-cloned repo using system node/npm
+      const backendPath = this.pathResolver.getBackendPath();
+      this.backendProcess = await this.startService(
+        backendPath,
+        this.config.backendStartCommand,
+        port,
+        'backend',
+        (msg, percent) => onProgress?.(msg, percent),
+      );
+    }
+
     onProgress?.('Backend running', 100);
   }
 
   /**
-   * V2: Start frontend process only (creates .env.production, no install, no build). Use with startup update check.
+   * V2: Start frontend process only.
+   * - Packaged: starts a lightweight static HTTP server on the configured port.
+   * - Dev: creates .env.production and starts the configured frontend start command.
    */
   async startFrontendOnly(onProgress?: ProgressCallback): Promise<void> {
+    const isPackaged = app.isPackaged;
+
+    const port = await this.findFreePort(this.config.frontendPort);
+    this.runtimeFrontendPort = port;
+    if (port !== this.config.frontendPort) {
+      console.log(`[ServiceManager] Frontend preferred port ${this.config.frontendPort} busy → using ${port}`);
+    }
+
+    if (isPackaged) {
+      const frontendPath = this.pathResolver.getBundledFrontendPath();
+      onProgress?.('Starting frontend (static server)...', 0);
+      // Pass the actual backend port so it can be injected into index.html at serve time
+      this.staticFrontendServer = await this.startStaticServer(frontendPath, port, this.getBackendPort());
+      onProgress?.('Frontend running', 100);
+      return;
+    }
+
     const frontendPath = this.pathResolver.getFrontendPath();
     this.createFrontendEnvFile(frontendPath);
     onProgress?.('Starting frontend...', 0);
     this.frontendProcess = await this.startService(
       frontendPath,
       this.config.frontendStartCommand,
-      this.config.frontendPort,
+      port,
       'frontend',
       (msg, percent) => onProgress?.(msg, percent),
     );
@@ -976,13 +1293,18 @@ VITE_FRONTEND_PORT=${this.config.frontendPort}
     const backendPath = this.pathResolver.getBackendPath();
     const frontendPath = this.pathResolver.getFrontendPath();
 
+    const backendPort = await this.findFreePort(this.config.backendPort);
+    this.runtimeBackendPort = backendPort;
+    const frontendPort = await this.findFreePort(this.config.frontendPort);
+    this.runtimeFrontendPort = frontendPort;
+
     this.createFrontendEnvFile(frontendPath);
 
     onProgress?.('Starting backend...', 20);
     this.backendProcess = await this.startService(
       backendPath,
       this.config.backendStartCommand,
-      this.config.backendPort,
+      backendPort,
       'backend',
       (msg, percent) => onProgress?.(msg, 20 + percent * 0.3),
     );
@@ -990,7 +1312,7 @@ VITE_FRONTEND_PORT=${this.config.frontendPort}
     this.frontendProcess = await this.startService(
       frontendPath,
       this.config.frontendStartCommand,
-      this.config.frontendPort,
+      frontendPort,
       'frontend',
       (msg, percent) => onProgress?.(msg, 50 + percent * 0.5),
     );
@@ -1001,6 +1323,13 @@ VITE_FRONTEND_PORT=${this.config.frontendPort}
    * Get service status
    */
   getBackendStatus(): ServiceStatus {
+    if (app.isPackaged) {
+      return {
+        running: this.bundledBackendProcess !== undefined,
+        port: this.config.backendPort,
+        pid: this.bundledBackendProcess?.pid,
+      };
+    }
     return {
       running: this.backendProcess !== undefined && !this.backendProcess.killed,
       port: this.config.backendPort,

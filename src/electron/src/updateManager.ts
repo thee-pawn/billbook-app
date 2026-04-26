@@ -1,165 +1,212 @@
-import { execSync, spawn } from 'child_process';
+import { autoUpdater, UpdateInfo, ProgressInfo } from 'electron-updater';
+import { dialog, app, BrowserWindow } from 'electron';
+import log from 'electron-log';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
-import { PathResolver } from './pathResolver';
-import { AppConfig } from './config';
 
 /**
- * V2: Update Manager
- * Fetches latest code and runs npm install in parallel after app start.
- * Notifies user to restart when updates are applied.
+ * Production Update Manager
+ *
+ * Uses electron-updater to check GitHub Releases for new app versions.
+ *
+ * Rate-limiting strategy (avoids GitHub API rate limits):
+ *  - Checks on startup (respecting the 1-hour cooldown).
+ *  - Starts an hourly interval timer after the first check.
+ *  - Skips any check that is within 60 minutes of the previous one.
+ *  - In development (app.isPackaged === false) all checks are skipped.
  */
 
-export interface UpdateResult {
-  updatesApplied: boolean;
-  backendChanged: boolean;
-  frontendChanged: boolean;
-  error?: string;
-}
+const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const LAST_CHECK_FILENAME = 'last-update-check.json';
 
 export class UpdateManager {
-  private pathResolver: PathResolver;
-  private config: AppConfig;
+  private lastCheckFile: string;
+  private hourlyTimer?: NodeJS.Timeout;
+  private getMainWindow: () => BrowserWindow | undefined;
 
-  constructor(pathResolver: PathResolver, config: AppConfig) {
-    this.pathResolver = pathResolver;
-    this.config = config;
+  constructor(userDataPath: string, getMainWindow: () => BrowserWindow | undefined) {
+    this.lastCheckFile = path.join(userDataPath, LAST_CHECK_FILENAME);
+    this.getMainWindow = getMainWindow;
+    this.configureUpdater();
   }
 
+  // ─── Configuration ──────────────────────────────────────────────────────────
+
+  private configureUpdater(): void {
+    // Route all updater logs through electron-log (written to disk on Windows too)
+    autoUpdater.logger = log;
+    (autoUpdater.logger as any).transports.file.level = 'info';
+
+    // Download silently in the background; user is prompted after download completes.
+    autoUpdater.autoDownload = true;
+
+    // Install on next quit if the user clicks "Later"
+    autoUpdater.autoInstallOnAppQuit = true;
+
+    autoUpdater.on('checking-for-update', () => {
+      log.info('[Updater] Checking for update…');
+      this.sendToRenderer('update-checking');
+    });
+
+    autoUpdater.on('update-not-available', () => {
+      log.info('[Updater] App is up to date.');
+      this.sendToRenderer('update-not-available');
+    });
+
+    autoUpdater.on('update-available', (info: UpdateInfo) => {
+      log.info('[Updater] Update available:', info.version);
+      this.sendToRenderer('update-available', { version: info.version, releaseNotes: info.releaseNotes });
+    });
+
+    autoUpdater.on('download-progress', (progress: ProgressInfo) => {
+      const percent = Math.round(progress.percent);
+      log.info(`[Updater] Downloading… ${percent}%`);
+      this.sendToRenderer('update-download-progress', {
+        percent,
+        bytesPerSecond: Math.round(progress.bytesPerSecond),
+        transferred: progress.transferred,
+        total: progress.total,
+      });
+    });
+
+    autoUpdater.on('update-downloaded', async (info: UpdateInfo) => {
+      log.info('[Updater] Update downloaded:', info.version);
+      this.sendToRenderer('update-downloaded', { version: info.version });
+      await this.promptRestart(info.version);
+    });
+
+    autoUpdater.on('error', (err: Error) => {
+      log.warn('[Updater] Error (non-fatal):', err.message);
+      this.sendToRenderer('update-error', { message: err.message });
+    });
+  }
+
+  // ─── Public API ─────────────────────────────────────────────────────────────
+
   /**
-   * Run git pull in a repo; returns true if something changed.
-   * On Windows uses a shell (cmd.exe) so PATH (including portable Git) is respected in packaged apps.
+   * Check for a new app version on GitHub Releases.
+   *
+   * @param force  If true, bypasses the 1-hour cooldown (e.g. manual "Check for updates").
+   *
+   * Safe to call from startup AND from the periodic timer — the cooldown guard
+   * prevents spamming GitHub's API.
    */
-  private async gitPull(repoPath: string): Promise<boolean> {
-    if (!fs.existsSync(path.join(repoPath, '.git'))) return false;
-    const env = this.pathResolver.getEnvWithPortablePaths();
-    const opts: import('child_process').ExecSyncOptions = {
-      cwd: repoPath,
-      env,
-      ...(os.platform() === 'win32' && {
-        shell: process.env.COMSPEC || 'cmd.exe',
-        windowsHide: true,
-      }),
-    };
+  async checkForUpdates(force = false): Promise<void> {
+    if (!app.isPackaged) {
+      log.info('[Updater] Development mode — update check skipped.');
+      return;
+    }
+
+    if (!force && this.isWithinCooldown()) {
+      const ageMin = Math.round((Date.now() - this.getLastCheckTime()) / 60_000);
+      log.info(`[Updater] Cooldown active (${ageMin} min ago) — skipping.`);
+      return;
+    }
+
+    this.saveLastCheckTime();
+    log.info('[Updater] Initiating update check…');
+
     try {
-      const before = execSync('git rev-parse HEAD', { ...opts, encoding: 'utf-8' }).trim();
-      execSync('git fetch origin', { ...opts, stdio: 'pipe' });
-      execSync(`git reset --hard origin/${this.config.initialBranch}`, { ...opts, stdio: 'pipe' });
-      const after = execSync('git rev-parse HEAD', { ...opts, encoding: 'utf-8' }).trim();
-      return before !== after;
-    } catch (e) {
-      console.warn('UpdateManager: gitPull failed for', repoPath, e);
-      throw new Error(`git pull failed for ${repoPath}: ${e instanceof Error ? e.message : String(e)}`);
+      await autoUpdater.checkForUpdates();
+    } catch (err: any) {
+      log.warn('[Updater] checkForUpdates threw (non-fatal):', err?.message ?? err);
     }
   }
 
   /**
-   * Run npm install in a project; returns promise that resolves when done.
-   * Uses shell: true and portable PATH so npm/git work in packaged Windows apps.
+   * Start the recurring hourly update check.
+   * Call once after the app window is fully ready.
+   * The timer is unreffed so it never prevents Node from exiting.
    */
-  private npmInstall(projectPath: string): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!fs.existsSync(path.join(projectPath, 'package.json'))) {
-        resolve();
-        return;
+  startPeriodicChecks(): void {
+    if (this.hourlyTimer) return;
+
+    this.hourlyTimer = setInterval(() => {
+      this.checkForUpdates().catch((err) =>
+        log.warn('[Updater] Periodic check error:', err),
+      );
+    }, UPDATE_CHECK_INTERVAL_MS);
+
+    // Allow the process to exit naturally even when the timer is pending.
+    if (this.hourlyTimer.unref) {
+      this.hourlyTimer.unref();
+    }
+
+    log.info('[Updater] Hourly update checks started (interval: 60 min).');
+  }
+
+  /**
+   * Stop the periodic timer. Call during app cleanup / before quit.
+   */
+  stopPeriodicChecks(): void {
+    if (this.hourlyTimer) {
+      clearInterval(this.hourlyTimer);
+      this.hourlyTimer = undefined;
+      log.info('[Updater] Hourly update checks stopped.');
+    }
+  }
+
+  // ─── Cooldown helpers ───────────────────────────────────────────────────────
+
+  private getLastCheckTime(): number {
+    try {
+      if (fs.existsSync(this.lastCheckFile)) {
+        const data = JSON.parse(fs.readFileSync(this.lastCheckFile, 'utf-8'));
+        return typeof data.lastCheck === 'number' ? data.lastCheck : 0;
       }
-      const npm = spawn('npm', ['install'], {
-        cwd: projectPath,
-        stdio: 'ignore',
-        shell: true,
-        env: { ...this.pathResolver.getEnvWithPortablePaths(), PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1' },
-        ...(os.platform() === 'win32' && { windowsHide: true }),
-      });
-      npm.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`npm install exited ${code}`))));
-      npm.on('error', reject);
-    });
+    } catch {
+      // Ignore corrupt/missing file — treat as never checked.
+    }
+    return 0;
   }
 
-  /**
-   * Pull latest code for a repo. Returns true if something changed.
-   * Public for startup flow: check for updates then optionally install.
-   */
-  async pullRepo(repoPath: string): Promise<boolean> {
-    return this.gitPull(repoPath);
-  }
-
-  /**
-   * Run npm install in a project. Public for startup flow.
-   */
-  async installRepo(projectPath: string): Promise<void> {
-    return this.npmInstall(projectPath);
-  }
-
-  /**
-   * Run npm run build in backend if config has backendBuildCommand. Public for startup flow.
-   */
-  async buildBackendIfConfigured(): Promise<void> {
-    return this.buildBackend();
-  }
-
-  /**
-   * Run npm run build in backend if config has backendBuildCommand
-   */
-  private async buildBackend(): Promise<void> {
-    const backendPath = this.pathResolver.getBackendPath();
-    if (!this.config.backendBuildCommand || !fs.existsSync(path.join(backendPath, 'package.json'))) return;
-    return new Promise((resolve, reject) => {
-      const [cmd, ...args] = this.config.backendBuildCommand!.split(' ');
-      const p = spawn(cmd, args, {
-        cwd: backendPath,
-        stdio: 'ignore',
-        shell: true,
-        env: this.pathResolver.getEnvWithPortablePaths(),
-        ...(os.platform() === 'win32' && { windowsHide: true }),
-      });
-      p.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`Backend build exited ${code}`))));
-      p.on('error', reject);
-    });
-  }
-
-  /**
-   * Check for updates (git pull + npm install) in both repos.
-   * Runs in background; does not start services. Returns whether updates were applied.
-   */
-  async checkAndApplyUpdates(): Promise<UpdateResult> {
-    const backendPath = this.pathResolver.getBackendPath();
-    const frontendPath = this.pathResolver.getFrontendPath();
-    console.log('[V2] UpdateManager: checkAndApplyUpdates started', { backendPath, frontendPath });
-
-    let backendChanged = false;
-    let frontendChanged = false;
-
+  private saveLastCheckTime(): void {
     try {
-      backendChanged = await this.gitPull(backendPath);
-      frontendChanged = await this.gitPull(frontendPath);
-    } catch (e) {
-      console.warn('UpdateManager: git pull failed', e);
-      return { updatesApplied: false, backendChanged: false, frontendChanged: false, error: String(e) };
+      fs.writeFileSync(
+        this.lastCheckFile,
+        JSON.stringify({ lastCheck: Date.now(), checkedAt: new Date().toISOString() }),
+        'utf-8',
+      );
+    } catch (err) {
+      log.warn('[Updater] Could not persist last-check timestamp:', err);
+    }
+  }
+
+  private isWithinCooldown(): boolean {
+    return Date.now() - this.getLastCheckTime() < UPDATE_CHECK_INTERVAL_MS;
+  }
+
+  // ─── Restart prompt ─────────────────────────────────────────────────────────
+
+  private async promptRestart(version: string): Promise<void> {
+    const win = this.getMainWindow();
+    if (!win || win.isDestroyed()) {
+      // No window — install silently on quit.
+      return;
     }
 
-    if (!backendChanged && !frontendChanged) {
-      console.log('[V2] UpdateManager: no changes (already up to date)');
-      return { updatesApplied: false, backendChanged: false, frontendChanged: false };
-    }
+    const { response } = await dialog.showMessageBox(win, {
+      type: 'info',
+      title: 'Update ready to install',
+      message: `BillBook ${version} has been downloaded.`,
+      detail: 'Restart now to apply the update, or continue working and it will be installed when you quit.',
+      buttons: ['Restart now', 'Later'],
+      defaultId: 0,
+      cancelId: 1,
+    });
 
-    try {
-      await Promise.all([this.npmInstall(backendPath), this.npmInstall(frontendPath)]);
-      await this.buildBackend();
-    } catch (e) {
-      console.warn('UpdateManager: npm install or build failed', e);
-      return {
-        updatesApplied: true,
-        backendChanged,
-        frontendChanged,
-        error: String(e),
-      };
+    if (response === 0) {
+      // quitAndInstall(isSilent, isForceRunAfter)
+      autoUpdater.quitAndInstall(false, true);
     }
+  }
 
-    return {
-      updatesApplied: true,
-      backendChanged,
-      frontendChanged,
-    };
+  // ─── IPC helper ─────────────────────────────────────────────────────────────
+
+  private sendToRenderer(channel: string, payload?: object): void {
+    const win = this.getMainWindow();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(channel, payload);
+    }
   }
 }

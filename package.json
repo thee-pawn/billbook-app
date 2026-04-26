@@ -1,6 +1,6 @@
 {
   "name": "billbook-app",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "BillBook – self-contained, auto-updating desktop application",
   "main": "electron/main.js",
   "author": "BillBook Team",
@@ -10,10 +10,16 @@
     "dev": "electron .",
     "dev:fresh": "npm run build:frontend && npm run build:backend && electron .",
     "build:frontend": "cd ../billbook-fe && npm run build",
-    "build:backend": "esbuild ../whatsapp_automation/src/server.ts --bundle --platform=node --target=node18 --outfile=../whatsapp_automation/dist/server.js --external:playwright --external:playwright-core --external:electron",
+    "build:backend": "node -e \"require('fs').rmSync(require('path').join(process.cwd(),'../whatsapp_automation/dist'),{recursive:true,force:true})\" && esbuild ../whatsapp_automation/src/server.ts --bundle --platform=node --target=node18 --outfile=../whatsapp_automation/dist/server.js --external:playwright --external:playwright-core --external:electron",
     "build": "npm run build:frontend && npm run build:backend && electron-builder",
     "build:release": "npm run build:frontend && npm run build:backend && electron-builder --publish never",
-    "release": "npm run build:frontend && npm run build:backend && electron-builder --publish always"
+    "build:mac": "npm run build:frontend && npm run build:backend && electron-builder --mac --publish never",
+    "build:win": "npm run build:frontend && npm run build:backend && electron-builder --win --publish never",
+    "build:linux": "npm run build:frontend && npm run build:backend && electron-builder --linux --publish never",
+    "release": "npm run build:frontend && npm run build:backend && electron-builder --publish always",
+    "release:mac": "npm run build:frontend && npm run build:backend && electron-builder --mac --publish always",
+    "release:win": "npm run build:frontend && npm run build:backend && electron-builder --win --publish always",
+    "release:linux": "npm run build:frontend && npm run build:backend && electron-builder --linux --publish always"
   },
   "dependencies": {
     "electron-log": "^5.1.2",

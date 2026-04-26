@@ -127,17 +127,35 @@ export class PathResolver {
   }
   
   /**
-   * Get the backend repository path
+   * Get the backend repository path (development — git-cloned repo)
    */
   getBackendPath(): string {
     return path.join(this.getReposPath(), 'backend');
   }
   
   /**
-   * Get the frontend repository path
+   * Get the frontend repository path (development — git-cloned repo)
    */
   getFrontendPath(): string {
     return path.join(this.getReposPath(), 'frontend');
+  }
+
+  /**
+   * Get the bundled backend directory (production packaged app).
+   * Points to extraResources/backend/dist as declared in electron-builder.yml.
+   * The entry point inside this directory is server.js.
+   */
+  getBundledBackendPath(): string {
+    return path.join(process.resourcesPath, 'backend', 'dist');
+  }
+
+  /**
+   * Get the bundled frontend directory (production packaged app).
+   * Points to extraResources/frontend as declared in electron-builder.yml.
+   * Contains the Vite-built static assets (index.html, assets/, etc.).
+   */
+  getBundledFrontendPath(): string {
+    return path.join(process.resourcesPath, 'frontend');
   }
   
   /**

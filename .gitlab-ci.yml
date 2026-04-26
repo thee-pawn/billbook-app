@@ -1,0 +1,59 @@
+# GitLab CI for the billbook-app repo only.
+# billbook-fe and whatsapp_automation are cloned as siblings (../ from this project).
+# billbook-be is not part of this build.
+#
+# CI/CD → Variables:
+#   GH_TOKEN              — PAT with contents:write on GitHub (billbook-app releases)
+#   GITHUB_CLONE_TOKEN    — optional PAT with repo read, if fe / whatsapp_automation are private
+#
+# TODO: replace thee-pawn with your GitHub org/user if different.
+
+variables:
+  HUSKY: "0"
+
+workflow:
+  rules:
+    - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]/'
+
+stages:
+  - validate
+  - build
+
+validate-version:
+  stage: validate
+  image: node:20-alpine
+  script:
+    - |
+      VERSION="${CI_COMMIT_TAG#v}"
+      PKG=$(node -p "require('./package.json').version")
+      test "$PKG" = "$VERSION" || { echo "package.json ($PKG) != tag ($VERSION)"; exit 1; }
+      echo "OK $VERSION"
+
+# Linux build on shared runners. macOS / Windows need self-hosted runners (same clone pattern).
+build-linux-x64:
+  stage: build
+  image: node:20-bullseye
+  variables:
+    DISPLAY: ":99"
+  before_script:
+    - apt-get update -y && apt-get install -y git libgtk-3-dev libnotify-dev libnss3 libxss1 libxtst6 xvfb libgbm1 libasound2 rpm
+    - Xvfb :99 -screen 0 1024x768x24 &
+    - cd "${CI_PROJECT_DIR}/.."
+    - |
+      if [ -n "${GITHUB_CLONE_TOKEN:-}" ]; then
+        git clone --depth 1 "https://oauth2:${GITHUB_CLONE_TOKEN}@github.com/thee-pawn/billbook-fe.git" billbook-fe
+        git clone --depth 1 "https://oauth2:${GITHUB_CLONE_TOKEN}@github.com/thee-pawn/whatsapp_automation.git" whatsapp_automation
+      else
+        git clone --depth 1 "https://github.com/thee-pawn/billbook-fe.git" billbook-fe
+        git clone --depth 1 "https://github.com/thee-pawn/whatsapp_automation.git" whatsapp_automation
+      fi
+    - cd "${CI_PROJECT_DIR}"
+  script:
+    - npm ci --prefix ../billbook-fe
+    - npm ci --prefix ../whatsapp_automation
+    - npm ci
+    - npm run build --prefix ../billbook-fe
+    - npm run build:backend
+    - npx electron-builder --linux --x64 --publish always
+  environment:
+    name: release/linux

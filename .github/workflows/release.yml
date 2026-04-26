@@ -1,0 +1,185 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# BillBook desktop release — lives in the billbook-app repo (separate from fe/wa)
+#
+# This workflow checks out three sibling folders (matches local dev layout):
+#   ../billbook-fe            ← Vite frontend
+#   ../whatsapp_automation    ← WhatsApp automation (esbuild → dist/server.js)
+#   . (billbook-app)          ← Electron + electron-builder
+#
+# billbook-be is NOT needed for this build (AWS API is configured in frontend env).
+#
+# Triggers: push tag v*.*.*  or  workflow_dispatch
+#
+# Secrets (repo: billbook-app → Settings → Secrets → Actions)
+#   MULTI_REPO_CHECKOUT_TOKEN  — only if billbook-fe / whatsapp_automation are
+#                                PRIVATE GitHub repos. Use a fine-grained PAT with
+#                                Contents: Read on both. Omit for public repos.
+#
+# Publishing uses the default GITHUB_TOKEN (no PAT needed for uploads to THIS repo).
+# Optional signing secrets: MAC_CSC_*, APPLE_*, WIN_CSC_* (same as before).
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag (optional; defaults to ref)'
+        required: false
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # TODO: set to your GitHub org/user + repo names (must match package.json ../ paths)
+  BILLBOOK_FE_REPO: thee-pawn/billbook-fe
+  WHATSAPP_AUTOMATION_REPO: thee-pawn/whatsapp_automation
+
+jobs:
+  validate:
+    name: Validate version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Extract version from tag
+        id: ver
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Tag → $VERSION"
+
+      - name: Verify package.json matches tag
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${{ steps.ver.outputs.version }}"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "❌ package.json version ($PKG_VERSION) ≠ tag ($TAG_VERSION)"
+            echo "Run: npm version $TAG_VERSION --no-git-tag-version && git commit -am chore && retag"
+            exit 1
+          fi
+          echo "✅ $PKG_VERSION"
+
+  build:
+    name: Build (${{ matrix.name }})
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-14
+            platform: mac
+            arch: arm64
+          - name: macOS x64
+            os: macos-13
+            platform: mac
+            arch: x64
+          - name: Windows x64
+            os: windows-latest
+            platform: win
+            arch: x64
+          - name: Linux x64
+            os: ubuntu-latest
+            platform: linux
+            arch: x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # Parent folder will hold three siblings: billbook-app, billbook-fe, whatsapp_automation
+      - name: Checkout billbook-app (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: billbook-app
+
+      - name: Checkout billbook-fe
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.BILLBOOK_FE_REPO }}
+          path: billbook-fe
+          token: ${{ secrets.MULTI_REPO_CHECKOUT_TOKEN || github.token }}
+
+      - name: Checkout whatsapp_automation
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.WHATSAPP_AUTOMATION_REPO }}
+          path: whatsapp_automation
+          token: ${{ secrets.MULTI_REPO_CHECKOUT_TOKEN || github.token }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: |
+            billbook-fe/package-lock.json
+            whatsapp_automation/package-lock.json
+            billbook-app/package-lock.json
+
+      - name: Linux apt dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y libgtk-3-dev libnotify-dev libnss3 libxss1 libxtst6 xvfb libgbm1 libasound2
+
+      - run: npm ci
+        working-directory: billbook-fe
+      - run: npm ci
+        working-directory: whatsapp_automation
+      - run: npm ci
+        working-directory: billbook-app
+
+      - run: npm run build
+        working-directory: billbook-fe
+
+      - run: npm run build:backend
+        working-directory: billbook-app
+
+      - name: Import macOS signing certificate
+        if: matrix.platform == 'mac' && env.MAC_CSC_LINK != ''
+        env:
+          MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+        run: |
+          echo "$MAC_CSC_LINK" | base64 --decode > /tmp/cert.p12
+          security create-keychain -p "ci-keychain-password" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "ci-keychain-password" build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$MAC_CSC_KEY_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/productsign
+          security set-key-partition-list -S apple-tool:,apple: -s \
+            -k "ci-keychain-password" build.keychain
+          rm /tmp/cert.p12
+
+      - name: electron-builder publish
+        working-directory: billbook-app
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish always
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: dist-${{ matrix.platform }}-${{ matrix.arch }}
+          path: billbook-app/dist/
+          retention-days: 7

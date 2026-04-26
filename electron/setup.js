@@ -10,6 +10,42 @@ const log = require('electron-log');
 // Deleted or absent → setup window runs again on next launch.
 const MARKER_FILE = 'playwright-setup-complete';
 
+function getPlaywrightCliPath() {
+  return app.isPackaged
+    ? path.join(
+        process.resourcesPath,
+        'backend',
+        'node_modules',
+        'playwright',
+        'cli.js'
+      )
+    : path.join(
+        __dirname,
+        '../../whatsapp_automation/node_modules/playwright/cli.js'
+      );
+}
+
+/**
+ * The directory where Playwright will store (and later find) browser binaries.
+ * Stored inside userData so it survives app updates and is writable on all OSes.
+ */
+function getBrowsersPath() {
+  return path.join(app.getPath('userData'), 'playwright-browsers');
+}
+
+/**
+ * Playwright stores browsers under PLAYWRIGHT_BROWSERS_PATH in folders like `chromium-1234`.
+ */
+function hasChromiumBrowsersInstalled(browsersPath) {
+  if (!fs.existsSync(browsersPath)) return false;
+  try {
+    const entries = fs.readdirSync(browsersPath);
+    return entries.some((name) => /^chromium/i.test(name));
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Returns true if Playwright Chromium has already been installed on this machine.
  */
@@ -28,11 +64,102 @@ function markSetupComplete() {
 }
 
 /**
- * The directory where Playwright will store (and later find) browser binaries.
- * Stored inside userData so it survives app updates and is writable on all OSes.
+ * Whether first-run setup should run: missing marker, missing Chromium folders,
+ * or bundled Playwright CLI missing (corrupt install).
  */
-function getBrowsersPath() {
-  return path.join(app.getPath('userData'), 'playwright-browsers');
+function needsSetup() {
+  const cli = getPlaywrightCliPath();
+  if (!fs.existsSync(cli)) {
+    return true;
+  }
+
+  const browsersPath = getBrowsersPath();
+  const browsersOk = hasChromiumBrowsersInstalled(browsersPath);
+
+  if (!isSetupComplete() || !browsersOk) {
+    if (isSetupComplete() && !browsersOk) {
+      try {
+        fs.unlinkSync(path.join(app.getPath('userData'), MARKER_FILE));
+      } catch (_) {
+        /* ignore */
+      }
+    }
+    return true;
+  }
+
+  return false;
+}
+
+/**
+ * Packaged app: Electron binary acts as Node (ELECTRON_RUN_AS_NODE) — no separate Node install.
+ * Development: requires `node` on PATH for the backend child process.
+ */
+function verifyNodeRuntime(onProgress) {
+  return new Promise((resolve, reject) => {
+    onProgress?.(
+      app.isPackaged
+        ? 'Checking built-in runtime (no separate Node.js install required)…'
+        : 'Checking Node.js…'
+    );
+
+    const bin = app.isPackaged ? process.execPath : 'node';
+    const args = ['-e', 'process.stdout.write(process.version)'];
+    const child = spawn(bin, args, {
+      env: app.isPackaged
+        ? { ...process.env, ELECTRON_RUN_AS_NODE: '1' }
+        : process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let version = '';
+    child.stdout.on('data', (d) => {
+      version += d.toString();
+    });
+
+    child.on('error', (err) => {
+      reject(
+        new Error(
+          app.isPackaged
+            ? `Built-in runtime check failed: ${err.message}`
+            : 'Node.js is not installed or not on PATH. Install Node.js LTS from https://nodejs.org and try again.'
+        )
+      );
+    });
+
+    child.on('exit', (code) => {
+      if (code !== 0) {
+        reject(
+          new Error(
+            app.isPackaged
+              ? 'Built-in Node runtime check failed.'
+              : 'Node.js is not installed or not on PATH. Install Node.js LTS and try again.'
+          )
+        );
+        return;
+      }
+      log.info(
+        `[Setup] ${app.isPackaged ? 'Embedded' : 'System'} Node ${version.trim()}`
+      );
+      resolve();
+    });
+  });
+}
+
+/**
+ * Verifies runtime + bundled Playwright, then downloads Chromium if needed.
+ */
+function ensurePlaywrightBrowsers(onProgress) {
+  return verifyNodeRuntime(onProgress)
+    .then(() => {
+      onProgress?.('Verifying Playwright package…');
+      const cli = getPlaywrightCliPath();
+      if (!fs.existsSync(cli)) {
+        throw new Error(
+          'Playwright is missing from this installation. Reinstall BillBook or contact support.'
+        );
+      }
+      return installBrowsers(onProgress);
+    });
 }
 
 /**
@@ -48,19 +175,7 @@ function installBrowsers(onProgress) {
     const browsersPath = getBrowsersPath();
     fs.mkdirSync(browsersPath, { recursive: true });
 
-    // Playwright's CLI entry point — cross-platform, no shell script needed.
-    const playwrightCli = app.isPackaged
-      ? path.join(
-          process.resourcesPath,
-          'backend',
-          'node_modules',
-          'playwright',
-          'cli.js'
-        )
-      : path.join(
-          __dirname,
-          '../../whatsapp_automation/node_modules/playwright/cli.js'
-        );
+    const playwrightCli = getPlaywrightCliPath();
 
     log.info(`[Setup] Running playwright install chromium`);
     log.info(`[Setup] Browsers path: ${browsersPath}`);
@@ -68,6 +183,8 @@ function installBrowsers(onProgress) {
 
     // process.execPath is the Electron binary; with ELECTRON_RUN_AS_NODE=1 it
     // behaves as a plain Node.js runtime — no Node installation required.
+    onProgress?.('Downloading Playwright Chromium (one-time)…');
+
     const child = spawn(process.execPath, [playwrightCli, 'install', 'chromium'], {
       env: {
         ...process.env,
@@ -104,4 +221,12 @@ function installBrowsers(onProgress) {
   });
 }
 
-module.exports = { isSetupComplete, installBrowsers, getBrowsersPath };
+module.exports = {
+  isSetupComplete,
+  needsSetup,
+  verifyNodeRuntime,
+  ensurePlaywrightBrowsers,
+  installBrowsers,
+  getBrowsersPath,
+  getPlaywrightCliPath,
+};

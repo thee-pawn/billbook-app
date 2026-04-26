@@ -6,7 +6,20 @@
 appId: com.billbook.app            # TODO: change to your company reverse-domain
 productName: BillBookPlus
 
+# Smaller installers (NSIS / zip / dmg); slightly slower builds.
+compression: maximum
+
 # ── Auto-update publishing ────────────────────────────────────────────────────
+# electron-updater already downloads ONLY the artifact for the running OS:
+#   Windows → latest.yml + *.exe / blockmap
+#   macOS   → latest-mac.yml + *.zip (or Squirrel feed)
+#   Linux   → latest-linux.yml + AppImage (if you publish it)
+# The GitHub "Release" page lists all uploaded assets in one tag — that total
+# can look huge. End users still download one installer; auto-update pulls one file.
+#
+# To keep separate release *repos* per OS (cleaner release pages), build with
+#   --win / --mac / --linux
+# and point publish.repo at different repos via CI env (see package.json scripts).
 publish:
   provider: github
   owner: thee-pawn
@@ -29,29 +42,39 @@ extraResources:
     to: frontend
     filter:
       - "**/*"
+      - "!**/*.map"
 
-  # esbuild-bundled WhatsApp automation backend
+  # esbuild-bundled backend — ONLY server.js (never "**/*": whatsapp_automation/dist
+  # is often polluted with old Electron outputs / DMGs and can exceed 1 GB).
   - from: ../whatsapp_automation/dist
     to: backend/dist
     filter:
-      - "**/*"
+      - "server.js"
 
   # Playwright npm packages (JS only — no browser binaries here).
   # On the user's very first launch a setup window downloads Chromium into
   # the app's userData folder automatically (see electron/setup.js).
   - from: ../whatsapp_automation/node_modules/playwright
     to: backend/node_modules/playwright
+    filter:
+      - "**/*"
+      - "!**/*.map"
   - from: ../whatsapp_automation/node_modules/playwright-core
     to: backend/node_modules/playwright-core
+    filter:
+      - "**/*"
+      - "!**/*.map"
 
 # ── Build targets ─────────────────────────────────────────────────────────────
 mac:
   icon: build/icon.icns
   category: public.app-category.business
+  # DMG for manual installs; ZIP is required by electron-updater (Squirrel.Mac) for auto-update.
   # Build one arch per run to avoid parallel DMG mount-point collisions.
   # Use --x64 for Intel Mac or --arm64 for Apple Silicon: npm run build -- --mac --x64
   target:
     - target: dmg
+    - target: zip
   gatekeeperAssess: false
   hardenedRuntime: false
   artifactName: "${productName}-${version}-${arch}.${ext}"
@@ -60,11 +83,11 @@ win:
   icon: build/icon.ico
   verifyUpdateCodeSignature: false
   requestedExecutionLevel: asInvoker
+  # x64 only — drops 32-bit builds (~half the Windows payload on your release page).
   target:
     - target: nsis
       arch:
         - x64
-        - ia32
   artifactName: "${productName}-${version}-${arch}-Setup.${ext}"
 
 linux:
