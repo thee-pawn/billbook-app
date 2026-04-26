@@ -14,7 +14,6 @@ variables:
 workflow:
   rules:
     - if: '$CI_COMMIT_TAG =~ /^v[0-9]+\.[0-9]+\.[0-9]/'
-
 stages:
   - validate
   - build
@@ -41,10 +40,10 @@ build-linux-x64:
     - cd "${CI_PROJECT_DIR}/.."
     - |
       if [ -n "${GITHUB_CLONE_TOKEN:-}" ]; then
-        git clone --depth 1 "https://oauth2:${GITHUB_CLONE_TOKEN}@github.com/thee-pawn/billbook-fe.git" billbook-fe
+        git clone --depth 1 "https://oauth2:${GITHUB_CLONE_TOKEN}@github.com/thee-pawn/billbook-frontend.git" billbook-fe
         git clone --depth 1 "https://oauth2:${GITHUB_CLONE_TOKEN}@github.com/thee-pawn/whatsapp_automation.git" whatsapp_automation
       else
-        git clone --depth 1 "https://github.com/thee-pawn/billbook-fe.git" billbook-fe
+        git clone --depth 1 "https://github.com/thee-pawn/billbook-frontend.git" billbook-frontend
         git clone --depth 1 "https://github.com/thee-pawn/whatsapp_automation.git" whatsapp_automation
       fi
     - cd "${CI_PROJECT_DIR}"
