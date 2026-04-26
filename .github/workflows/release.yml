@@ -2,7 +2,7 @@
 # BillBook desktop release — lives in the billbook-app repo (separate from fe/wa)
 #
 # This workflow checks out three sibling folders (matches local dev layout):
-#   ../billbook-fe            ← Vite frontend
+#   ../billbook-fe            ← Vite frontend (GitHub repo: billbook-frontend → folder billbook-fe)
 #   ../whatsapp_automation    ← WhatsApp automation (esbuild → dist/server.js)
 #   . (billbook-app)          ← Electron + electron-builder
 #
@@ -11,7 +11,7 @@
 # Triggers: push tag v*.*.*  or  workflow_dispatch
 #
 # Secrets (repo: billbook-app → Settings → Secrets → Actions)
-#   MULTI_REPO_CHECKOUT_TOKEN  — only if billbook-fe / whatsapp_automation are
+#   MULTI_REPO_CHECKOUT_TOKEN  — only if billbook-frontend / whatsapp_automation are
 #                                PRIVATE GitHub repos. Use a fine-grained PAT with
 #                                Contents: Read on both. Omit for public repos.
 #
@@ -41,8 +41,9 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # TODO: set to your GitHub org/user + repo names (must match package.json ../ paths)
-  BILLBOOK_FE_REPO: thee-pawn/billbook-fe
+  # Remote repo names on GitHub (owner/repo). Frontend is checked out as folder "billbook-fe"
+  # so package.json / electron-builder paths (../billbook-fe) stay unchanged.
+  BILLBOOK_FE_REPO: thee-pawn/billbook-frontend
   WHATSAPP_AUTOMATION_REPO: thee-pawn/whatsapp_automation
 
 jobs:
@@ -106,7 +107,7 @@ jobs:
         with:
           path: billbook-app
 
-      - name: Checkout billbook-fe
+      - name: Checkout frontend (repo billbook-frontend → dir billbook-fe)
         uses: actions/checkout@v4
         with:
           repository: ${{ env.BILLBOOK_FE_REPO }}

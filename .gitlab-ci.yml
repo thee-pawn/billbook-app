@@ -1,5 +1,5 @@
 # GitLab CI for the billbook-app repo only.
-# billbook-fe and whatsapp_automation are cloned as siblings (../ from this project).
+# GitHub repo thee-pawn/billbook-frontend is cloned as ../billbook-fe (matches package.json paths).
 # billbook-be is not part of this build.
 #
 # CI/CD → Variables:
@@ -43,7 +43,7 @@ build-linux-x64:
         git clone --depth 1 "https://oauth2:${GITHUB_CLONE_TOKEN}@github.com/thee-pawn/billbook-frontend.git" billbook-fe
         git clone --depth 1 "https://oauth2:${GITHUB_CLONE_TOKEN}@github.com/thee-pawn/whatsapp_automation.git" whatsapp_automation
       else
-        git clone --depth 1 "https://github.com/thee-pawn/billbook-frontend.git" billbook-frontend
+        git clone --depth 1 "https://github.com/thee-pawn/billbook-frontend.git" billbook-fe
         git clone --depth 1 "https://github.com/thee-pawn/whatsapp_automation.git" whatsapp_automation
       fi
     - cd "${CI_PROJECT_DIR}"
