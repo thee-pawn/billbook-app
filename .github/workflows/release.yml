@@ -147,7 +147,15 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y libgtk-3-dev libnotify-dev libnss3 libxss1 libxtst6 xvfb libgbm1 libasound2
+          sudo apt-get install -y libgtk-3-dev libnotify-dev libnss3 libxss1 libxtst6 xvfb libgbm1 libasound2 imagemagick
+
+      - name: Install ImageMagick (Windows)
+        if: matrix.os == 'windows-latest'
+        run: choco install imagemagick -y --no-progress
+
+      - name: Install ImageMagick (macOS)
+        if: matrix.os == 'macos-14' || matrix.os == 'macos-13'
+        run: brew list imagemagick &>/dev/null || brew install imagemagick
 
       - run: npm ci
         working-directory: billbook-fe
@@ -162,8 +170,34 @@ jobs:
       - run: npm run build:backend
         working-directory: billbook-app
 
+      # electron-builder.yml expects build/icon.{icns,ico,png}. Those files are often gitignored;
+      # empty CSC_* env vars also break signing (builder treats paths as cert files → "not a file").
+      - name: Ensure build icons (CI fallback)
+        working-directory: billbook-app
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            for d in /c/Program\ Files/ImageMagick-*; do
+              [[ -d "$d" ]] && export PATH="$d:$PATH" && break
+            done
+          fi
+          if [[ "${{ runner.os }}" == "macOS" ]] && [[ ! -f build/icon.icns ]]; then
+            E="node_modules/electron/dist/Electron.app/Contents/Resources/electron.icns"
+            [[ -f "$E" ]] && cp "$E" build/icon.icns
+          fi
+          if [[ ! -f build/icon.png ]]; then
+            convert -size 512x512 xc:'#1e3a8a' build/icon.png || magick -size 512x512 xc:'#1e3a8a' build/icon.png
+          fi
+          if [[ ! -f build/icon.ico ]]; then
+            convert build/icon.png -define icon:auto-resize=256,128,64,48,32,16 build/icon.ico \
+              || magick build/icon.png -define icon:auto-resize=256,128,64,48,32,16 build/icon.ico
+          fi
+          ls -la build/
+
       - name: Import macOS signing certificate
-        if: matrix.platform == 'mac' && env.MAC_CSC_LINK != ''
+        if: matrix.platform == 'mac' && secrets.MAC_CSC_LINK != ''
         env:
           MAC_CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           MAC_CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
@@ -178,18 +212,36 @@ jobs:
             -k "ci-keychain-password" build.keychain
           rm /tmp/cert.p12
 
+      # Do not set CSC_* / WIN_CSC_* / APPLE_* to empty strings — that breaks signing and can
+      # produce "…/billbook-app not a file". Only export when secrets exist.
       - name: electron-builder publish
         working-directory: billbook-app
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
-          CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
-          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
-        run: npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish always
+          MAC_CSC_LINK_SECRET: ${{ secrets.MAC_CSC_LINK }}
+          MAC_CSC_KEY_PASSWORD_SECRET: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
+          APPLE_ID_SECRET: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD_SECRET: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID_SECRET: ${{ secrets.APPLE_TEAM_ID }}
+          WIN_CSC_LINK_SECRET: ${{ secrets.WIN_CSC_LINK }}
+          WIN_CSC_KEY_PASSWORD_SECRET: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -n "${MAC_CSC_LINK_SECRET:-}" ]] && [[ "${{ matrix.platform }}" == "mac" ]]; then
+            export CSC_LINK="$MAC_CSC_LINK_SECRET"
+            export CSC_KEY_PASSWORD="$MAC_CSC_KEY_PASSWORD_SECRET"
+            export APPLE_ID="$APPLE_ID_SECRET"
+            export APPLE_APP_SPECIFIC_PASSWORD="$APPLE_APP_SPECIFIC_PASSWORD_SECRET"
+            export APPLE_TEAM_ID="$APPLE_TEAM_ID_SECRET"
+          else
+            export CSC_IDENTITY_AUTO_SELECT=false
+          fi
+          if [[ -n "${WIN_CSC_LINK_SECRET:-}" ]] && [[ "${{ matrix.platform }}" == "win" ]]; then
+            export WIN_CSC_LINK="$WIN_CSC_LINK_SECRET"
+            export WIN_CSC_KEY_PASSWORD="$WIN_CSC_KEY_PASSWORD_SECRET"
+          fi
+          npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish always
 
       - uses: actions/upload-artifact@v4
         if: failure()
