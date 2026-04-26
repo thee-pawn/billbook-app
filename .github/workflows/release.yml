@@ -94,15 +94,12 @@ jobs:
             os: windows-latest
             platform: win
             arch: x64
-          - name: Linux x64
-            os: ubuntu-latest
-            platform: linux
-            arch: x64
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - name: Require PAT for sibling repo checkouts
+        shell: bash
         run: |
           if [ -z "$MULTI_REPO_CHECKOUT_TOKEN" ]; then
             echo "::error title=Missing secret::Add MULTI_REPO_CHECKOUT_TOKEN (Settings → Secrets → Actions). Use a PAT with Contents: Read on ${{ env.BILLBOOK_FE_REPO }} and ${{ env.WHATSAPP_AUTOMATION_REPO }}. GITHUB_TOKEN cannot access other repos — checkout fails with Not Found."
@@ -142,12 +139,6 @@ jobs:
             billbook-fe/package-lock.json
             whatsapp_automation/package-lock.json
             billbook-app/package-lock.json
-
-      - name: Linux apt dependencies
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y libgtk-3-dev libnotify-dev libnss3 libxss1 libxtst6 xvfb libgbm1 libasound2 imagemagick
 
       - name: Install ImageMagick (Windows)
         if: matrix.os == 'windows-latest'
@@ -246,7 +237,13 @@ jobs:
             export WIN_CSC_LINK="$WIN_CSC_LINK_SECRET"
             export WIN_CSC_KEY_PASSWORD="$WIN_CSC_KEY_PASSWORD_SECRET"
           fi
-          npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish always
+          # GitHub-hosted macOS runners often fail on DMG (hdiutil resize "Device not configured").
+          # electron-updater uses the ZIP on mac anyway — build ZIP only in CI.
+          if [[ "${{ matrix.platform }}" == "mac" ]]; then
+            npx electron-builder --mac zip --${{ matrix.arch }} --publish always
+          else
+            npx electron-builder --${{ matrix.platform }} --${{ matrix.arch }} --publish always
+          fi
 
       - uses: actions/upload-artifact@v4
         if: failure()
