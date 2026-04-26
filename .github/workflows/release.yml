@@ -11,9 +11,10 @@
 # Triggers: push tag v*.*.*  or  workflow_dispatch
 #
 # Secrets (repo: billbook-app → Settings → Secrets → Actions)
-#   MULTI_REPO_CHECKOUT_TOKEN  — only if billbook-frontend / whatsapp_automation are
-#                                PRIVATE GitHub repos. Use a fine-grained PAT with
-#                                Contents: Read on both. Omit for public repos.
+#   MULTI_REPO_CHECKOUT_TOKEN  — REQUIRED. A PAT (fine-grained or classic) with
+#                                Contents: Read on billbook-frontend + whatsapp_automation.
+#                                The default GITHUB_TOKEN cannot read other repos — GitHub
+#                                returns 404 "Not Found" for get-repository, which breaks checkout.
 #
 # Publishing uses the default GITHUB_TOKEN (no PAT needed for uploads to THIS repo).
 # Optional signing secrets: MAC_CSC_*, APPLE_*, WIN_CSC_* (same as before).
@@ -101,6 +102,15 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
+      - name: Require PAT for sibling repo checkouts
+        run: |
+          if [ -z "$MULTI_REPO_CHECKOUT_TOKEN" ]; then
+            echo "::error title=Missing secret::Add MULTI_REPO_CHECKOUT_TOKEN (Settings → Secrets → Actions). Use a PAT with Contents: Read on ${{ env.BILLBOOK_FE_REPO }} and ${{ env.WHATSAPP_AUTOMATION_REPO }}. GITHUB_TOKEN cannot access other repos — checkout fails with Not Found."
+            exit 1
+          fi
+        env:
+          MULTI_REPO_CHECKOUT_TOKEN: ${{ secrets.MULTI_REPO_CHECKOUT_TOKEN }}
+
       # Parent folder will hold three siblings: billbook-app, billbook-fe, whatsapp_automation
       - name: Checkout billbook-app (this repo)
         uses: actions/checkout@v4
@@ -112,14 +122,14 @@ jobs:
         with:
           repository: ${{ env.BILLBOOK_FE_REPO }}
           path: billbook-fe
-          token: ${{ secrets.MULTI_REPO_CHECKOUT_TOKEN || github.token }}
+          token: ${{ secrets.MULTI_REPO_CHECKOUT_TOKEN }}
 
       - name: Checkout whatsapp_automation
         uses: actions/checkout@v4
         with:
           repository: ${{ env.WHATSAPP_AUTOMATION_REPO }}
           path: whatsapp_automation
-          token: ${{ secrets.MULTI_REPO_CHECKOUT_TOKEN || github.token }}
+          token: ${{ secrets.MULTI_REPO_CHECKOUT_TOKEN }}
 
       - uses: actions/setup-node@v4
         with:
