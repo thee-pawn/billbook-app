@@ -12,7 +12,7 @@
 #
 # Secrets (repo: billbook-app → Settings → Secrets → Actions)
 #   MULTI_REPO_CHECKOUT_TOKEN  — REQUIRED. A PAT (fine-grained or classic) with
-#                                Contents: Read on billbook-frontend + whatsapp_automation.
+#                                Contents: Read on billbook-frontend + whatsapp-automation.
 #                                The default GITHUB_TOKEN cannot read other repos — GitHub
 #                                returns 404 "Not Found" for get-repository, which breaks checkout.
 #
@@ -42,10 +42,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # Remote repo names on GitHub (owner/repo). Frontend is checked out as folder "billbook-fe"
-  # so package.json / electron-builder paths (../billbook-fe) stay unchanged.
+  # Used in error messages / docs. Checkout steps below use the same owner/repo explicitly
+  # so logs show "Syncing repository: thee-pawn/billbook-frontend" (not the local folder name).
   BILLBOOK_FE_REPO: thee-pawn/billbook-frontend
-  WHATSAPP_AUTOMATION_REPO: thee-pawn/whatsapp_automation
+  WHATSAPP_AUTOMATION_REPO: thee-pawn/whatsapp-automation
 
 jobs:
   validate:
@@ -117,17 +117,20 @@ jobs:
         with:
           path: billbook-app
 
-      - name: Checkout frontend (repo billbook-frontend → dir billbook-fe)
+      # path=billbook-fe keeps ../billbook-fe working in package.json / electron-builder.
+      # repository= must be the real GitHub repo (billbook-frontend), not the folder name.
+      - name: Checkout frontend (thee-pawn/billbook-frontend → ./billbook-fe)
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.BILLBOOK_FE_REPO }}
+          repository: thee-pawn/billbook-frontend
           path: billbook-fe
           token: ${{ secrets.MULTI_REPO_CHECKOUT_TOKEN }}
 
-      - name: Checkout whatsapp_automation
+      # Repo slug is whatsapp-automation; local folder stays whatsapp_automation for package.json / esbuild.
+      - name: Checkout whatsapp-automation (thee-pawn/whatsapp-automation → ./whatsapp_automation)
         uses: actions/checkout@v4
         with:
-          repository: ${{ env.WHATSAPP_AUTOMATION_REPO }}
+          repository: thee-pawn/whatsapp-automation
           path: whatsapp_automation
           token: ${{ secrets.MULTI_REPO_CHECKOUT_TOKEN }}
 

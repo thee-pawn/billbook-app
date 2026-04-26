@@ -41,10 +41,10 @@ build-linux-x64:
     - |
       if [ -n "${GITHUB_CLONE_TOKEN:-}" ]; then
         git clone --depth 1 "https://oauth2:${GITHUB_CLONE_TOKEN}@github.com/thee-pawn/billbook-frontend.git" billbook-fe
-        git clone --depth 1 "https://oauth2:${GITHUB_CLONE_TOKEN}@github.com/thee-pawn/whatsapp_automation.git" whatsapp_automation
+        git clone --depth 1 "https://oauth2:${GITHUB_CLONE_TOKEN}@github.com/thee-pawn/whatsapp-automation.git" whatsapp_automation
       else
         git clone --depth 1 "https://github.com/thee-pawn/billbook-frontend.git" billbook-fe
-        git clone --depth 1 "https://github.com/thee-pawn/whatsapp_automation.git" whatsapp_automation
+        git clone --depth 1 "https://github.com/thee-pawn/whatsapp-automation.git" whatsapp_automation
       fi
     - cd "${CI_PROJECT_DIR}"
   script:
