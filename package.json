@@ -1,6 +1,6 @@
 {
   "name": "billbook-app",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "BillBook – self-contained, auto-updating desktop application",
   "main": "electron/main.js",
   "author": "BillBook Team",
