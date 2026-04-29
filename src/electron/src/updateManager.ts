@@ -196,8 +196,8 @@ export class UpdateManager {
     });
 
     if (response === 0) {
-      // quitAndInstall(isSilent, isForceRunAfter)
-      autoUpdater.quitAndInstall(false, true);
+      // quitAndInstall(isSilent, isForceRunAfter) — Windows NSIS needs isSilent true for /S
+      autoUpdater.quitAndInstall(true, true);
     }
   }
 

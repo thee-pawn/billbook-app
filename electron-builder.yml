@@ -106,6 +106,9 @@ linux:
     - target: AppImage
 
 # ── NSIS installer options (Windows) ─────────────────────────────────────────
+# Assisted installer (oneClick: false) is fine for first-time setup in Downloads.
+# Auto-updates MUST call autoUpdater.quitAndInstall(true, true) so NSIS runs with /S;
+# otherwise users see the full wizard on every update.
 nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true

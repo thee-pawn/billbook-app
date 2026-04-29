@@ -89,18 +89,30 @@ function checkForUpdates() {
         : await dialog.showMessageBox(box);
 
       if (response === 0) {
-        log.info('[Updater] User chose Restart Now — quitAndInstall(false, true)');
+        log.info('[Updater] User chose Restart Now — quitAndInstall');
+        // See electron/main.js window-all-closed (darwin): we must app.quit() after the
+        // last window closes or the main process never exits and macOS updates never apply.
+        global.__billbookQuitForUpdate = true;
         setImmediate(() => {
           try {
-            autoUpdater.quitAndInstall(false, true);
+            // Windows NSIS: first arg MUST be true so the installer gets /S (silent). With
+            // nsis.oneClick: false, quitAndInstall(false, …) shows the full wizard again.
+            // Second arg: relaunch the app after install (--force-run). macOS updater ignores these.
+            autoUpdater.quitAndInstall(true, true);
           } catch (err) {
             log.error('[Updater] quitAndInstall threw:', err);
+            global.__billbookQuitForUpdate = false;
           }
+          // If quitAndInstall did not start a quit (e.g. Squirrel race), force quit so the
+          // staged ZIP can still install via normal exit.
+          setTimeout(() => {
+            const { app: electronApp } = require('electron');
+            if (global.__billbookQuitForUpdate && !electronApp.isQuitting) {
+              log.warn('[Updater] Fallback app.quit() — quitAndInstall did not exit the process');
+              electronApp.quit();
+            }
+          }, 2500);
         });
-        setTimeout(() => {
-          log.warn('[Updater] Process still running after quitAndInstall — continuing startup.');
-          finish();
-        }, 12000);
       } else {
         log.info('[Updater] User chose to update later.');
       }
