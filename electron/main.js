@@ -9,6 +9,26 @@ const { needsSetup, ensurePlaywrightBrowsers } = require('./setup');
 
 let mainWindow = null;
 
+/**
+ * macOS "About" reads Info.plist by default; if CFBundle* was wrong at pack time,
+ * the panel shows stale numbers. Align it with the root package.json bundled in the app.
+ */
+function syncAboutPanelFromPackageJson() {
+  if (process.platform !== 'darwin') return;
+  try {
+    const pkg = require(path.join(__dirname, '..', 'package.json'));
+    const v = pkg.version || app.getVersion();
+    app.setAboutPanelOptions({
+      applicationName: 'BillBookPlus',
+      applicationVersion: v,
+      version: v,
+      copyright: `Copyright © ${new Date().getFullYear()} BillBook Team`,
+    });
+  } catch (err) {
+    log.warn('[Main] syncAboutPanelFromPackageJson:', err.message);
+  }
+}
+
 // ── Main application window ───────────────────────────────────────────────────
 
 function createMainWindow() {
@@ -100,6 +120,8 @@ function runFirstTimeSetup() {
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
 app.whenReady().then(async () => {
+  syncAboutPanelFromPackageJson();
+
   // Step 1 — Dependency setup: verify Node runtime (embedded when packaged),
   //           bundled Playwright, then download Chromium if needed.
   if (needsSetup()) {
@@ -107,14 +129,16 @@ app.whenReady().then(async () => {
     await runFirstTimeSetup();
   }
 
-  // Step 2 — Check for app updates (resolves immediately if none / on error).
-  await checkForUpdates();
-
-  // Step 3 — Start the WhatsApp automation backend child process.
+  // Step 2 — Start the WhatsApp automation backend child process.
   await startBackend();
 
-  // Step 4 — Open the main window.
+  // Step 3 — Open the main window (do not wait for update download).
   createMainWindow();
+
+  // Step 4 — Check / download updates in the background; prompt when ready to install.
+  checkForUpdates().catch((err) =>
+    log.error('[Main] checkForUpdates failed:', err?.message ?? err),
+  );
 
   // macOS: recreate window when dock icon is clicked and no windows are open.
   app.on('activate', () => {

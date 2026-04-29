@@ -24,6 +24,10 @@ function startBackend() {
     ? path.join(process.resourcesPath, 'backend', 'dist', 'server.js')
     : path.join(__dirname, '../../whatsapp_automation/dist', 'server.js');
 
+  const backendCwd = app.isPackaged
+    ? path.join(process.resourcesPath, 'backend')
+    : path.join(__dirname, '../../whatsapp_automation');
+
   // Directory that contains playwright/playwright-core node_modules in the
   // packaged app (copied there via extraResources in electron-builder.yml).
   const nodeModulesPath = app.isPackaged
@@ -39,6 +43,7 @@ function startBackend() {
   log.info(`[Backend] Starting: ${nodeBin} ${serverPath}`);
 
   backendProcess = spawn(nodeBin, [serverPath], {
+    cwd: backendCwd,
     env: {
       ...process.env,
       // Tell Electron to behave as a plain Node runtime when packaged.

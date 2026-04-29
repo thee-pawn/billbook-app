@@ -1,7 +1,7 @@
 'use strict';
 
 const { autoUpdater } = require('electron-updater');
-const { dialog } = require('electron');
+const { dialog, app, BrowserWindow } = require('electron');
 const log = require('electron-log');
 
 // Route electron-updater logs to the same log file as the rest of the app.
@@ -12,38 +12,52 @@ autoUpdater.logger.transports.file.level = 'info';
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;
 
+function laterInstallHint() {
+  if (process.platform === 'darwin') {
+    return (
+      'If you choose Later, quit with ⌘Q (BillBook menu → Quit). Closing only the main window leaves the app running, so the update will not install.\n\n' +
+      'If Restart Now does nothing, drag BillBook into Applications first — updates cannot replace an app run directly from the installer disk image.'
+    );
+  }
+  return 'Restart now to apply the update, or choose Later and quit the app when you are ready.';
+}
+
 /**
- * Checks for updates and resolves when the app is ready to continue loading.
+ * Checks for updates without blocking the UI.
  *
- * - Dev mode (not packaged) → resolves immediately (electron-updater skips
- *   silently and fires no events, so we short-circuit to avoid a hang).
- * - No update available  → resolves immediately.
- * - Error during check   → logs the error and resolves so startup isn't blocked.
- * - Update available     → logs and lets the download proceed in the background.
- * - Update downloaded    → shows a dialog; user can restart now or defer.
+ * - Dev mode (not packaged) → resolves immediately.
+ * - No update / error on check → resolves once the metadata request completes.
+ * - Update available → resolves as soon as we know (download continues in background).
+ * - Update downloaded → shows a dialog (after the main window may already be open).
  */
 function checkForUpdates() {
-  const { app } = require('electron');
-
   if (!app.isPackaged) {
     log.info('[Updater] Development mode — skipping update check.');
     return Promise.resolve();
   }
 
   return new Promise((resolve) => {
-    autoUpdater.on('update-not-available', () => {
+    let settled = false;
+    const finish = () => {
+      if (!settled) {
+        settled = true;
+        resolve();
+      }
+    };
+
+    autoUpdater.once('update-not-available', () => {
       log.info('[Updater] App is up to date.');
-      resolve();
+      finish();
     });
 
-    autoUpdater.on('error', (err) => {
+    autoUpdater.once('error', (err) => {
       log.error('[Updater] Error checking for updates:', err.message || err);
-      // Never block startup on an update error.
-      resolve();
+      finish();
     });
 
-    autoUpdater.on('update-available', (info) => {
-      log.info(`[Updater] Update available: v${info.version}. Download starting…`);
+    autoUpdater.once('update-available', (info) => {
+      log.info(`[Updater] Update available: v${info.version}. Download in background…`);
+      finish(); // do not wait for download — startup / UI continues
     });
 
     autoUpdater.on('download-progress', (progress) => {
@@ -53,30 +67,48 @@ function checkForUpdates() {
       );
     });
 
-    autoUpdater.on('update-downloaded', async (info) => {
+    autoUpdater.once('update-downloaded', async (info) => {
       log.info(`[Updater] v${info.version} downloaded. Prompting user…`);
 
-      const { response } = await dialog.showMessageBox({
+      const parent =
+        BrowserWindow.getFocusedWindow() ||
+        BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
+
+      const box = {
         type: 'info',
         title: 'Update Ready',
         message: `Version ${info.version} has been downloaded and is ready to install.`,
-        detail: 'Restart now to apply the update, or continue and it will be applied on the next launch.',
+        detail: laterInstallHint(),
         buttons: ['Restart Now', 'Later'],
         defaultId: 0,
         cancelId: 1,
-      });
+      };
+
+      const { response } = parent
+        ? await dialog.showMessageBox(parent, box)
+        : await dialog.showMessageBox(box);
 
       if (response === 0) {
-        autoUpdater.quitAndInstall();
+        log.info('[Updater] User chose Restart Now — quitAndInstall(false, true)');
+        setImmediate(() => {
+          try {
+            autoUpdater.quitAndInstall(false, true);
+          } catch (err) {
+            log.error('[Updater] quitAndInstall threw:', err);
+          }
+        });
+        setTimeout(() => {
+          log.warn('[Updater] Process still running after quitAndInstall — continuing startup.');
+          finish();
+        }, 12000);
       } else {
         log.info('[Updater] User chose to update later.');
-        resolve();
       }
     });
 
     autoUpdater.checkForUpdates().catch((err) => {
       log.error('[Updater] checkForUpdates() threw:', err.message || err);
-      resolve();
+      finish();
     });
   });
 }

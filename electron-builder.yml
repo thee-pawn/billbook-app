@@ -65,6 +65,15 @@ extraResources:
       - "**/*"
       - "!**/*.map"
 
+  # Injected into WhatsApp Web at runtime (see whatsapp_automation wpp-loader).
+  # Without this, NODE_PATH only had playwright — @wppconnect/wa-js resolved only by luck (cwd),
+  # and Windows often failed WPP injection while macOS appeared fine.
+  - from: ../whatsapp_automation/node_modules/@wppconnect/wa-js
+    to: backend/node_modules/@wppconnect/wa-js
+    filter:
+      - "**/*"
+      - "!**/*.map"
+
 # ── Build targets ─────────────────────────────────────────────────────────────
 mac:
   icon: build/icon.icns
