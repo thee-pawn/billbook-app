@@ -152,11 +152,10 @@ app.on('window-all-closed', () => {
   stopBackend();
   if (process.platform !== 'darwin') {
     app.quit();
-  } else if (global.__billbookQuitForUpdate) {
-    // quitAndInstall() closes windows first; on macOS we normally do NOT quit when the
-    // last window closes (app stays in Dock). Without this, the process never exits and
-    // Squirrel.Mac cannot apply the update — "Restart Now" appears to do nothing.
-    global.__billbookQuitForUpdate = false;
-    app.quit();
   }
+  // macOS: do NOT call app.quit() here when updating — Squirrel.Mac needs
+  // Electron's native autoUpdater.quitAndInstall() to drive quit + relaunch.
+  // Forcing app.quit() right after closing windows was quitting before ShipIt could
+  // swap the app (update lost, no relaunch). If "Restart Now" ever feels stuck in Dock,
+  // user can ⌘Q once so autoInstallOnAppQuit can finish.
 });
