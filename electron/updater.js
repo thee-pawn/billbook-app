@@ -90,23 +90,26 @@ function checkForUpdates() {
 
       if (response === 0) {
         log.info('[Updater] User chose Restart Now');
+        global.__billbookQuitForUpdate = true;
 
         const scheduleQuitAndInstall = () => {
           try {
             autoUpdater.quitAndInstall(true, true);
           } catch (err) {
             log.error('[Updater] quitAndInstall threw:', err);
+            global.__billbookQuitForUpdate = false;
           }
         };
 
-        // macOS Squirrel: brief delay so native "update-downloaded" wins the race before quitAndInstall().
+        // macOS Squirrel: wait for native "update-downloaded" before quitAndInstall;
+        // 700ms was often too short in practice.
         if (process.platform === 'darwin') {
-          setTimeout(scheduleQuitAndInstall, 700);
+          setTimeout(scheduleQuitAndInstall, 1800);
         } else {
           setImmediate(scheduleQuitAndInstall);
         }
 
-        // Windows/Linux: if NSIS/exe never terminates the process, fall back to quitting.
+        // Windows/Linux: NSIS may fail to exit — force quit after delay.
         if (process.platform !== 'darwin') {
           setTimeout(() => {
             if (!app.isQuitting) {
@@ -114,6 +117,17 @@ function checkForUpdates() {
               app.quit();
             }
           }, 8000);
+        }
+
+        // macOS: if Dock keeps the process alive (no app.quit() after windows close), exit later.
+        if (process.platform === 'darwin') {
+          setTimeout(() => {
+            if (global.__billbookQuitForUpdate && !app.isQuitting) {
+              log.warn('[Updater] macOS fallback app.quit() — still running after restart');
+              global.__billbookQuitForUpdate = false;
+              app.quit();
+            }
+          }, 6000);
         }
       } else {
         log.info('[Updater] User chose to update later.');
