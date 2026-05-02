@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell, dialog, session } from 'electron';
+import { app, BrowserWindow, ipcMain, shell, dialog, session, screen } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs';
 import { PathResolver } from './pathResolver';
@@ -189,6 +189,76 @@ class Application {
     });
   }
 
+  /**
+   * The web UI is laid out for a wide desktop (~1280px). The default window is
+   * 1200px, so at 100% zoom the content is slightly larger than the viewport
+   * and looks "cropped" until the user zooms out. Scale content to fit the
+   * content width, and update on resize.
+   */
+  private static readonly MAIN_CONTENT_BASELINE_WIDTH = 1280;
+  private static readonly MAIN_ZOOM_MIN = 0.5;
+  private static readonly MAIN_ZOOM_MAX = 1;
+
+  private getDefaultMainWindowSize(): { width: number; height: number } {
+    const { workAreaSize } = screen.getPrimaryDisplay();
+    const margin = 32;
+    const preferredW = 1200;
+    const preferredH = 800;
+    const width = Math.max(900, Math.min(preferredW, workAreaSize.width - margin));
+    const height = Math.max(560, Math.min(preferredH, workAreaSize.height - margin));
+    return { width, height };
+  }
+
+  /** First-run init UI (init.html): needs vertical space for stages + bar + status + logs. */
+  private getInitWindowSize(): { width: number; height: number } {
+    const { workAreaSize } = screen.getPrimaryDisplay();
+    const margin = 48;
+    const preferredW = 820;
+    const preferredH = 700;
+    const width = Math.min(
+      preferredW,
+      Math.max(600, workAreaSize.width - margin),
+    );
+    const height = Math.min(
+      preferredH,
+      Math.max(600, workAreaSize.height - margin),
+    );
+    return { width, height };
+  }
+
+  private getMainWindowContentZoomFactor(win: BrowserWindow): number {
+    const cw = win.getContentBounds().width;
+    if (cw <= 0) return 1;
+    const factor = cw / Application.MAIN_CONTENT_BASELINE_WIDTH;
+    return Math.max(
+      Application.MAIN_ZOOM_MIN,
+      Math.min(Application.MAIN_ZOOM_MAX, factor),
+    );
+  }
+
+  private applyMainWindowContentZoom(win: BrowserWindow): void {
+    if (win.isDestroyed()) return;
+    const wc = win.webContents;
+    if (wc.isDestroyed()) return;
+    try {
+      wc.setZoomFactor(this.getMainWindowContentZoomFactor(win));
+    } catch {
+      // ignore
+    }
+  }
+
+  private attachAdaptiveContentZoom(win: BrowserWindow): void {
+    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
+    const apply = () => this.applyMainWindowContentZoom(win);
+    const scheduleResize = () => {
+      if (resizeTimer !== undefined) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(apply, 48);
+    };
+    win.on('resize', scheduleResize);
+    win.webContents.on('did-finish-load', apply);
+    win.once('ready-to-show', () => setTimeout(apply, 0));
+  }
+
   // ───────────────────────────────────────────────────────────────────────────
 
   /**
@@ -290,9 +360,10 @@ class Application {
 
   /** V2: Create main window in loading state – show "BillBookPlus Loading" + spinner until services are ready */
   private createMainWindowLoading(): void {
+    const { width, height } = this.getDefaultMainWindowSize();
     this.mainWindow = new BrowserWindow({
-      width: 1200,
-      height: 800,
+      width,
+      height,
       show: false,
       webPreferences: {
         nodeIntegration: false,
@@ -301,6 +372,8 @@ class Application {
         preload: path.join(__dirname, 'preload.js'),
       },
     });
+
+    this.attachAdaptiveContentZoom(this.mainWindow);
 
     // Loading screen is a local file; it navigates to localhost once services are ready.
     // Use a getter so navigation check always uses the actual runtime frontend port.
@@ -360,9 +433,10 @@ class Application {
    * Create the initialization window (dev first-time setup only)
    */
   private createInitWindow(): void {
+    const { width, height } = this.getInitWindowSize();
     this.initWindow = new BrowserWindow({
-      width: 800,
-      height: 600,
+      width,
+      height,
       resizable: false,
       frame: true,
       webPreferences: {
@@ -393,9 +467,10 @@ class Application {
    * Create the main application window (used in dev after first-time setup)
    */
   private createMainWindow(): void {
+    const { width, height } = this.getDefaultMainWindowSize();
     this.mainWindow = new BrowserWindow({
-      width: 1200,
-      height: 800,
+      width,
+      height,
       show: false,
       webPreferences: {
         nodeIntegration: false,
@@ -404,6 +479,8 @@ class Application {
         preload: path.join(__dirname, 'preload.js'),
       },
     });
+
+    this.attachAdaptiveContentZoom(this.mainWindow);
 
     // Main window only navigates within the frontend origin.
     // Use a getter so the check always reflects the actual runtime port.
@@ -594,9 +671,19 @@ app.on('ready', async () => {
 });
 
 app.on('window-all-closed', () => {
-  // On macOS, apps typically stay open until explicitly quit
+  // On macOS, apps typically stay open until explicitly quit — unless we are
+  // finishing an auto-update (quitAndInstall); align with electron/main.js + updater.js.
   if (process.platform !== 'darwin') {
     app.quit();
+    return;
+  }
+  const g = globalThis as typeof globalThis & { __billbookQuitForUpdate?: boolean };
+  if (g.__billbookQuitForUpdate) {
+    setTimeout(() => {
+      g.__billbookQuitForUpdate = false;
+      console.log('[Main] Deferred app.quit() after macOS update install');
+      app.quit();
+    }, 2000);
   }
 });
 
@@ -610,12 +697,13 @@ app.on('activate', () => {
 
 app.on('before-quit', (e) => {
   if (!application) return;
+  // Second emission (after cleanup calls app.quit): quitting is already true — allow default quit
+  // so electron-updater's `quit` handler runs with exit code 0 (install-on-quit).
   if (application['quitting']) return;
   e.preventDefault();
-  application['quitting'] = true;
   (async () => {
     await application.cleanup();
-    app.exit(0);
+    app.quit();
   })();
 });
 

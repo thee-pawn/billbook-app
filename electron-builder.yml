@@ -75,10 +75,14 @@ extraResources:
       - "!**/*.map"
 
 # ── Build targets ─────────────────────────────────────────────────────────────
+# macOS auto-update: electron-updater downloads the ZIP from GitHub Releases
+# (latest-mac.yml + *.zip). DMG is for manual installation only.
+# Production: enable Apple code signing + notarization (set CSC_* env / ASC_* API key in CI)
+# so Gatekeeper allows updates; keep hardenedRuntime + entitlements consistent per Apple docs.
 mac:
   icon: build/icon.icns
   category: public.app-category.business
-  # DMG for manual installs; ZIP is required by electron-updater (Squirrel.Mac) for auto-update.
+  # DMG for manual installs; ZIP is published for electron-updater (latest-mac.yml).
   # Build one arch per run to avoid parallel DMG mount-point collisions.
   # Use --x64 for Intel Mac or --arm64 for Apple Silicon: npm run build -- --mac --x64
   target:
@@ -123,7 +127,7 @@ nsis:
 
 # ── DMG options (macOS) ───────────────────────────────────────────────────────
 dmg:
-  title: BillBook Installer
+  title: BillBookPlus Installer
   icon: build/icon.icns
   window:
     width: 600

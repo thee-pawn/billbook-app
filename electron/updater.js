@@ -8,6 +8,9 @@ const log = require('electron-log');
 autoUpdater.logger = log;
 autoUpdater.logger.transports.file.level = 'info';
 
+autoUpdater.allowDowngrade = false;
+autoUpdater.allowPrerelease = false;
+
 // Download silently in the background; prompt on completion.
 autoUpdater.autoDownload = true;
 autoUpdater.autoInstallOnAppQuit = true;

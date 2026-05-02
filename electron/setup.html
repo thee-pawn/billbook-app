@@ -9,22 +9,28 @@
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: #0f172a;
-      color: #e2e8f0;
-      height: 100vh;
+      /* Match billbook loading / init: teal brand gradient (not default blue) */
+      background: linear-gradient(135deg, #14b8a6 0%, #0d9488 100%);
+      color: #fff;
+      min-height: 100vh;
+      min-height: 100dvh;
       display: flex;
       flex-direction: column;
       align-items: center;
       justify-content: center;
       user-select: none;
       -webkit-app-region: drag; /* make the frameless window draggable */
-      overflow: hidden;
+      overflow-x: hidden;
+      overflow-y: auto;
+      padding: 12px 10px;
+      box-sizing: border-box;
     }
 
     .card {
-      width: 420px;
+      width: min(420px, calc(100vw - 24px));
       text-align: center;
       padding: 0 24px;
+      flex-shrink: 0;
     }
 
     /* ── Logo ── */
@@ -32,12 +38,12 @@
       width: 72px;
       height: 72px;
       border-radius: 20px;
-      background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+      background: rgba(255, 255, 255, 0.22);
       display: flex;
       align-items: center;
       justify-content: center;
       margin: 0 auto 28px;
-      box-shadow: 0 8px 24px rgba(59, 130, 246, 0.35);
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
     }
     .logo svg { width: 36px; height: 36px; fill: #fff; }
 
@@ -47,10 +53,11 @@
       font-weight: 700;
       letter-spacing: -0.3px;
       margin-bottom: 6px;
+      color: #fff;
     }
     .subtitle {
       font-size: 13.5px;
-      color: #64748b;
+      color: rgba(255, 255, 255, 0.88);
       line-height: 1.5;
       margin-bottom: 36px;
     }
@@ -58,16 +65,18 @@
     /* ── Progress track ── */
     .progress-track {
       height: 6px;
-      background: #1e293b;
+      width: 100%;
+      background: rgba(0, 0, 0, 0.15);
       border-radius: 99px;
       overflow: hidden;
       margin-bottom: 14px;
+      box-sizing: border-box;
     }
     .progress-fill {
       height: 100%;
       width: 4%;
       border-radius: 99px;
-      background: linear-gradient(90deg, #3b82f6, #60a5fa);
+      background: linear-gradient(90deg, #ccfbf1, #f0fdfa);
       transition: width 0.5s cubic-bezier(.4,0,.2,1),
                   background 0.4s ease;
     }
@@ -85,21 +94,21 @@
     /* ── Status line ── */
     .status {
       font-size: 12.5px;
-      color: #475569;
+      color: rgba(255, 255, 255, 0.9);
       min-height: 18px;
       transition: color 0.3s;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .status.done    { color: #22c55e; }
-    .status.errored { color: #f87171; }
+    .status.done    { color: #d1fae5; }
+    .status.errored { color: #fecaca; }
 
     /* ── Footer note ── */
     .note {
       margin-top: 32px;
       font-size: 11.5px;
-      color: #334155;
+      color: rgba(255, 255, 255, 0.72);
     }
   </style>
 </head>

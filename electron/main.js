@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, screen } = require('electron');
 const path = require('path');
 const log = require('electron-log');
 const { checkForUpdates } = require('./updater');
@@ -29,18 +29,67 @@ function syncAboutPanelFromPackageJson() {
   }
 }
 
+// Match V2 main: layout targets ~1280px width; scale down in smaller windows.
+const MAIN_CONTENT_BASELINE_WIDTH = 1280;
+const MAIN_ZOOM_MIN = 0.5;
+const MAIN_ZOOM_MAX = 1;
+
+function getDefaultMainWindowSize() {
+  const { workAreaSize } = screen.getPrimaryDisplay();
+  const margin = 32;
+  const preferredW = 1200;
+  const preferredH = 800;
+  return {
+    width: Math.max(900, Math.min(preferredW, workAreaSize.width - margin)),
+    height: Math.max(560, Math.min(preferredH, workAreaSize.height - margin)),
+  };
+}
+
+function getMainWindowContentZoomFactor(win) {
+  const cw = win.getContentBounds().width;
+  if (cw <= 0) return 1;
+  const factor = cw / MAIN_CONTENT_BASELINE_WIDTH;
+  return Math.max(MAIN_ZOOM_MIN, Math.min(MAIN_ZOOM_MAX, factor));
+}
+
+function applyMainWindowContentZoom(win) {
+  if (win.isDestroyed()) return;
+  const wc = win.webContents;
+  if (wc.isDestroyed()) return;
+  try {
+    wc.setZoomFactor(getMainWindowContentZoomFactor(win));
+  } catch {
+    // ignore
+  }
+}
+
+function attachAdaptiveContentZoom(win) {
+  let resizeTimer;
+  const apply = () => applyMainWindowContentZoom(win);
+  const scheduleResize = () => {
+    if (resizeTimer !== undefined) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(apply, 48);
+  };
+  win.on('resize', scheduleResize);
+  win.webContents.on('did-finish-load', apply);
+  win.once('ready-to-show', () => setTimeout(apply, 0));
+}
+
 // ── Main application window ───────────────────────────────────────────────────
 
 function createMainWindow() {
+  const { width, height } = getDefaultMainWindowSize();
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width,
+    height,
     show: false,
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
     },
   });
+
+  attachAdaptiveContentZoom(mainWindow);
 
   // In packaged mode the frontend is copied to resources/frontend/ via extraResources.
   // In development point directly at the Vite build output.

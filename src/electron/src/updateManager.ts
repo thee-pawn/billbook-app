@@ -43,6 +43,10 @@ export class UpdateManager {
     // Install on next quit if the user clicks "Later"
     autoUpdater.autoInstallOnAppQuit = true;
 
+    // Production defaults — GitHub Releases channel only (no downgrade / preview builds).
+    autoUpdater.allowDowngrade = false;
+    autoUpdater.allowPrerelease = false;
+
     autoUpdater.on('checking-for-update', () => {
       log.info('[Updater] Checking for update…');
       this.sendToRenderer('update-checking');
@@ -103,13 +107,18 @@ export class UpdateManager {
       return;
     }
 
-    this.saveLastCheckTime();
     log.info('[Updater] Initiating update check…');
 
     try {
       await autoUpdater.checkForUpdates();
     } catch (err: any) {
       log.warn('[Updater] checkForUpdates threw (non-fatal):', err?.message ?? err);
+    } finally {
+      // Record check attempt after the HTTP round-trip finishes so failed checks
+      // still respect cooldown, but we never timestamp *before* the request runs.
+      if (app.isPackaged) {
+        this.saveLastCheckTime();
+      }
     }
   }
 
@@ -185,20 +194,81 @@ export class UpdateManager {
       return;
     }
 
+    const macDetail =
+      'If you choose Later, fully quit with ⌘Q (BillBookPlus menu → Quit). Closing only the main window leaves the app running, so the update may not install until you quit.\n\n' +
+      'If Restart Now does nothing, install from Applications — updates cannot replace an app run from the disk image.';
+
     const { response } = await dialog.showMessageBox(win, {
       type: 'info',
       title: 'Update ready to install',
-      message: `BillBook ${version} has been downloaded.`,
-      detail: 'Restart now to apply the update, or continue working and it will be installed when you quit.',
+      message: `BillBookPlus ${version} has been downloaded.`,
+      detail:
+        process.platform === 'darwin'
+          ? macDetail
+          : 'Restart now to apply the update, or continue working and it will be installed when you quit.',
       buttons: ['Restart now', 'Later'],
       defaultId: 0,
       cancelId: 1,
     });
 
     if (response === 0) {
-      // quitAndInstall(isSilent, isForceRunAfter) — Windows NSIS needs isSilent true for /S
-      autoUpdater.quitAndInstall(true, true);
+      this.scheduleQuitAndInstall();
     }
+  }
+
+  /**
+   * macOS: defer quitAndInstall — Squirrel.Mac / ShipIt + Electron often need a beat
+   * after "update-downloaded" before the native installer can take over; immediate
+   * calls are a common source of silent failures.
+   * Windows NSIS: quit immediately; optional fallback quit if the process stalls.
+   */
+  private scheduleQuitAndInstall(): void {
+    const runQuitAndInstall = () => {
+      try {
+        autoUpdater.quitAndInstall(true, true);
+      } catch (err) {
+        log.error('[Updater] quitAndInstall failed:', err);
+        this.clearQuitForUpdateFlag();
+      }
+    };
+
+    if (process.platform === 'darwin') {
+      this.setQuitForUpdateFlag(true);
+      // Legacy updater.js used 1800ms; keep aligned with proven BillBook builds.
+      setTimeout(runQuitAndInstall, 1800);
+      setTimeout(() => {
+        if (this.getQuitForUpdateFlag() && !(app as { isQuitting?: boolean }).isQuitting) {
+          log.warn('[Updater] macOS fallback app.quit() — still running after restart prompt');
+          this.clearQuitForUpdateFlag();
+          app.quit();
+        }
+      }, 6000);
+      return;
+    }
+
+    setImmediate(runQuitAndInstall);
+
+    // NSIS / Linux: occasionally the process stays alive — force exit so the installer can run.
+    setTimeout(() => {
+      if (!(app as { isQuitting?: boolean }).isQuitting) {
+        log.warn('[Updater] Fallback app.quit() — installer did not exit the process');
+        app.quit();
+      }
+    }, 8000);
+  }
+
+  private setQuitForUpdateFlag(value: boolean): void {
+    (globalThis as typeof globalThis & { __billbookQuitForUpdate?: boolean }).__billbookQuitForUpdate =
+      value;
+  }
+
+  private getQuitForUpdateFlag(): boolean {
+    return !!(globalThis as typeof globalThis & { __billbookQuitForUpdate?: boolean })
+      .__billbookQuitForUpdate;
+  }
+
+  private clearQuitForUpdateFlag(): void {
+    this.setQuitForUpdateFlag(false);
   }
 
   // ─── IPC helper ─────────────────────────────────────────────────────────────
