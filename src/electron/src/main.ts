@@ -669,15 +669,6 @@ app.on('ready', async () => {
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
-    return;
-  }
-  const g = globalThis as typeof globalThis & { __billbookQuitForUpdate?: boolean };
-  if (g.__billbookQuitForUpdate) {
-    setTimeout(() => {
-      g.__billbookQuitForUpdate = false;
-      console.log('[Main] Deferred app.exit() after macOS update install');
-      app.exit(0);
-    }, 2000);
   }
 });
 
