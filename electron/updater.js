@@ -1,8 +1,14 @@
 'use strict';
 
+const electron = require('electron');
+const { app, BrowserWindow, dialog } = electron;
 const { autoUpdater } = require('electron-updater');
-const { dialog, app, BrowserWindow } = require('electron');
 const log = require('electron-log');
+const {
+  isMacRunFromDiskImage,
+  waitForNativeSquirrelReady,
+  showDiskImageWarningOnce,
+} = require('./updater-mac-helpers');
 
 // Route electron-updater logs to the same log file as the rest of the app.
 autoUpdater.logger = log;
@@ -18,24 +24,53 @@ autoUpdater.autoInstallOnAppQuit = true;
 function laterInstallHint() {
   if (process.platform === 'darwin') {
     return (
-      'If you choose Later, quit with ⌘Q (BillBook menu → Quit). Closing only the main window leaves the app running, so the update will not install.\n\n' +
-      'If Restart Now does nothing, drag BillBook into Applications first — updates cannot replace an app run directly from the installer disk image.'
+      'If you choose Later, fully quit with ⌘Q (BillBookPlus menu → Quit). Closing only the main window leaves the app running, so the update will not install.\n\n' +
+      'If Restart Now still fails, ensure BillBookPlus is in Applications — updates cannot replace an app run from the installer disk image (/Volumes).'
     );
   }
   return 'Restart now to apply the update, or choose Later and quit the app when you are ready.';
+}
+
+function scheduleQuitAndInstall() {
+  const run = () => {
+    try {
+      // macOS MacUpdater.quitAndInstall() takes no args — Squirrel.Mac path.
+      if (process.platform === 'darwin') {
+        autoUpdater.quitAndInstall();
+      } else {
+        autoUpdater.quitAndInstall(true, true);
+      }
+    } catch (err) {
+      log.error('[Updater] quitAndInstall threw:', err);
+      global.__billbookQuitForUpdate = false;
+    }
+  };
+
+  if (process.platform === 'darwin') {
+    setTimeout(run, 1800);
+  } else {
+    setImmediate(run);
+  }
 }
 
 /**
  * Checks for updates without blocking the UI.
  *
  * - Dev mode (not packaged) → resolves immediately.
+ * - macOS + running from .dmg (/Volumes/) → skip checks (install cannot succeed).
  * - No update / error on check → resolves once the metadata request completes.
  * - Update available → resolves as soon as we know (download continues in background).
- * - Update downloaded → shows a dialog (after the main window may already be open).
+ * - Update downloaded → wait for native Squirrel on macOS, then dialog.
  */
 function checkForUpdates() {
   if (!app.isPackaged) {
     log.info('[Updater] Development mode — skipping update check.');
+    return Promise.resolve();
+  }
+
+  if (isMacRunFromDiskImage()) {
+    log.warn('[Updater] Skipping auto-update — app path is under /Volumes/ (disk image or external mount).');
+    showDiskImageWarningOnce(app, dialog, log);
     return Promise.resolve();
   }
 
@@ -66,12 +101,14 @@ function checkForUpdates() {
     autoUpdater.on('download-progress', (progress) => {
       log.info(
         `[Updater] Downloading… ${Math.round(progress.percent)}%` +
-          ` (${(progress.bytesPerSecond / 1024).toFixed(1)} KB/s)`
+          ` (${(progress.bytesPerSecond / 1024).toFixed(1)} KB/s)`,
       );
     });
 
     autoUpdater.once('update-downloaded', async (info) => {
-      log.info(`[Updater] v${info.version} downloaded. Prompting user…`);
+      log.info(`[Updater] v${info.version} — waiting for native macOS Squirrel updater…`);
+      await waitForNativeSquirrelReady(electron, log);
+      log.info(`[Updater] v${info.version} ready. Prompting user…`);
 
       const parent =
         BrowserWindow.getFocusedWindow() ||
@@ -94,23 +131,7 @@ function checkForUpdates() {
       if (response === 0) {
         log.info('[Updater] User chose Restart Now');
         global.__billbookQuitForUpdate = true;
-
-        const scheduleQuitAndInstall = () => {
-          try {
-            autoUpdater.quitAndInstall(true, true);
-          } catch (err) {
-            log.error('[Updater] quitAndInstall threw:', err);
-            global.__billbookQuitForUpdate = false;
-          }
-        };
-
-        // macOS Squirrel: wait for native "update-downloaded" before quitAndInstall;
-        // 700ms was often too short in practice.
-        if (process.platform === 'darwin') {
-          setTimeout(scheduleQuitAndInstall, 1800);
-        } else {
-          setImmediate(scheduleQuitAndInstall);
-        }
+        scheduleQuitAndInstall();
 
         // Windows/Linux: NSIS may fail to exit — force quit after delay.
         if (process.platform !== 'darwin') {
@@ -122,7 +143,7 @@ function checkForUpdates() {
           }, 8000);
         }
 
-        // macOS: if Dock keeps the process alive (no app.quit() after windows close), exit later.
+        // macOS: if Dock keeps the process alive, exit later.
         if (process.platform === 'darwin') {
           setTimeout(() => {
             if (global.__billbookQuitForUpdate && !app.isQuitting) {

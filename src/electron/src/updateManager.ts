@@ -1,5 +1,5 @@
 import { autoUpdater, UpdateInfo, ProgressInfo } from 'electron-updater';
-import { dialog, app, BrowserWindow } from 'electron';
+import electron, { dialog, app, BrowserWindow } from 'electron';
 import log from 'electron-log';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -74,8 +74,10 @@ export class UpdateManager {
     });
 
     autoUpdater.on('update-downloaded', async (info: UpdateInfo) => {
-      log.info('[Updater] Update downloaded:', info.version);
+      log.info('[Updater] Package downloaded; waiting for native macOS Squirrel updater…');
       this.sendToRenderer('update-downloaded', { version: info.version });
+      await this.awaitNativeMacSquirrelReady();
+      log.info('[Updater] Update downloaded:', info.version);
       await this.promptRestart(info.version);
     });
 
@@ -99,6 +101,20 @@ export class UpdateManager {
     if (!app.isPackaged) {
       log.info('[Updater] Development mode — update check skipped.');
       return;
+    }
+
+    if (process.platform === 'darwin') {
+      try {
+        if (process.execPath.includes('/Volumes/')) {
+          log.warn(
+            '[Updater] Skipping update check — executable path is under /Volumes/ (disk image or external volume).',
+          );
+          this.showMacDiskImageWarningOnce();
+          return;
+        }
+      } catch {
+        /* ignore */
+      }
     }
 
     if (!force && this.isWithinCooldown()) {
@@ -185,6 +201,49 @@ export class UpdateManager {
     return Date.now() - this.getLastCheckTime() < UPDATE_CHECK_INTERVAL_MS;
   }
 
+  /**
+   * MacUpdater emits JS "update-downloaded" before Squirrel.Mac finishes ingesting
+   * the ZIP via the local proxy. Restart/install must wait for Electron native
+   * autoUpdater "update-downloaded" or installs silently fail and repeat forever.
+   */
+  private async awaitNativeMacSquirrelReady(): Promise<void> {
+    if (process.platform !== 'darwin') return;
+    const nativeAu = electron.autoUpdater;
+    if (!nativeAu || typeof nativeAu.once !== 'function') {
+      log.warn('[Updater] electron.autoUpdater unavailable — skipping Squirrel wait');
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      const finish = () => {
+        clearTimeout(failSafe);
+        resolve();
+      };
+      nativeAu.once('update-downloaded', finish);
+      const failSafe = setTimeout(finish, 20_000);
+    });
+  }
+
+  private showMacDiskImageWarningOnce(): void {
+    const flag = path.join(path.dirname(this.lastCheckFile), '.billbook_dmg_update_warning_shown');
+    if (fs.existsSync(flag)) return;
+    try {
+      fs.writeFileSync(flag, new Date().toISOString(), 'utf-8');
+    } catch {
+      /* ignore */
+    }
+    try {
+      dialog.showMessageBoxSync({
+        type: 'warning',
+        title: 'Move BillBookPlus to Applications',
+        message: 'Automatic updates only install when BillBookPlus runs from the Applications folder.',
+        detail:
+          'You appear to be running from a disk image or external volume. Quit, drag BillBookPlus into Applications, eject the disk image if needed, then open it from there.',
+      });
+    } catch {
+      /* ignore */
+    }
+  }
+
   // ─── Restart prompt ─────────────────────────────────────────────────────────
 
   private async promptRestart(version: string): Promise<void> {
@@ -225,7 +284,11 @@ export class UpdateManager {
   private scheduleQuitAndInstall(): void {
     const runQuitAndInstall = () => {
       try {
-        autoUpdater.quitAndInstall(true, true);
+        if (process.platform === 'darwin') {
+          (autoUpdater as { quitAndInstall: (a?: boolean, b?: boolean) => void }).quitAndInstall();
+        } else {
+          autoUpdater.quitAndInstall(true, true);
+        }
       } catch (err) {
         log.error('[Updater] quitAndInstall failed:', err);
         this.clearQuitForUpdateFlag();
