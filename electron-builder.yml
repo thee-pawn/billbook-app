@@ -89,6 +89,8 @@ mac:
     - target: dmg
     - target: zip
   gatekeeperAssess: false
+  identity: null
+  forceCodeSigning: false
   hardenedRuntime: false
   artifactName: "${productName}-${version}-${arch}.${ext}"
 
