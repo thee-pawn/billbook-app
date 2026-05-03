@@ -3,7 +3,7 @@
 # Replace the placeholder values (marked with TODO) before your first release.
 # ─────────────────────────────────────────────────────────────────────────────
 
-appId: com.billbook.app            # TODO: change to your company reverse-domain
+appId: com.billbookplus            # TODO: change to your company reverse-domain
 productName: BillBookPlus
 
 # Smaller installers (NSIS / zip / dmg); slightly slower builds.
@@ -121,7 +121,7 @@ nsis:
   allowElevation: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
-  shortcutName: BillBook
+  shortcutName: BillBookPlus
   installerIcon: build/icon.ico
   uninstallerIcon: build/icon.ico
   deleteAppDataOnUninstall: false

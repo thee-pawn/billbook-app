@@ -54,7 +54,7 @@ const defaultConfig: AppConfig = {
 
 1. Go to https://github.com/settings/tokens
 2. Click "Generate new token (classic)"
-3. Name it: "BillBook App"
+3. Name it: "BillBookPlus App"
 4. Select scope: `repo` ✅
 5. Generate and copy the token
 

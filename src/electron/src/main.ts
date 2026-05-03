@@ -313,15 +313,6 @@ class Application {
    * timer is armed for subsequent checks.
    */
   private async v2NormalStart(): Promise<void> {
-    // Check for updates BEFORE starting services. If an update is downloaded,
-    // it installs and restarts — we never reach service start.
-    const willUpdate = await this.updateManager.checkOnStartup();
-    if (willUpdate) {
-      console.log('[V2] Update in progress — skipping service start.');
-      return;
-    }
-    this.updateManager.closeUpdatingWindow();
-
     this.createMainWindowLoading();
 
     try {
@@ -344,10 +335,13 @@ class Application {
         this.mainWindow.show();
       }
 
-      // Start periodic background checks (hourly) after the UI settles.
-      setTimeout(() => {
-        this.updateManager.startPeriodicChecks();
-      }, 5_000);
+      // Download updates silently in background; the updating loader only
+      // appears when the downloaded update is being installed (user clicks
+      // "Restart Now" or app quits with autoInstallOnAppQuit).
+      this.updateManager.checkForUpdates().catch((err) =>
+        console.log('[Updater] Background check error:', err),
+      );
+      this.updateManager.startPeriodicChecks();
 
     } catch (error: any) {
       console.error('V2 normal start failed:', error);

@@ -1211,6 +1211,24 @@ VITE_FRONTEND_PORT=${this.config.frontendPort}
   }
 
   /**
+   * Reclaim a preferred port by killing stale processes from a previous session.
+   * On Windows, orphaned backend/frontend processes can survive an app crash and
+   * hold ports indefinitely. If the preferred port is busy, kill whatever holds it
+   * and wait briefly for the OS to release the socket.
+   */
+  private async reclaimPreferredPort(port: number): Promise<void> {
+    if (await this.isPortAvailable(port)) return;
+    console.log(`[ServiceManager] Preferred port ${port} is busy — reclaiming from stale process…`);
+    this.killProcessesOnPort(port);
+    await new Promise((r) => setTimeout(r, PORT_KILL_WAIT_MS));
+    if (await this.isPortAvailable(port)) {
+      console.log(`[ServiceManager] Port ${port} reclaimed successfully`);
+    } else {
+      console.warn(`[ServiceManager] Port ${port} still busy after reclaim attempt`);
+    }
+  }
+
+  /**
    * V2: Start backend process only (no install, no build).
    *
    * - Packaged: uses utilityProcess.fork() with Electron's own Node.js runtime —
@@ -1220,6 +1238,7 @@ VITE_FRONTEND_PORT=${this.config.frontendPort}
   async startBackendOnly(onProgress?: ProgressCallback): Promise<void> {
     onProgress?.('Starting backend...', 0);
 
+    await this.reclaimPreferredPort(this.config.backendPort);
     const port = await this.findFreePort(this.config.backendPort);
     this.runtimeBackendPort = port;
     if (port !== this.config.backendPort) {
@@ -1257,6 +1276,7 @@ VITE_FRONTEND_PORT=${this.config.frontendPort}
   async startFrontendOnly(onProgress?: ProgressCallback): Promise<void> {
     const isPackaged = app.isPackaged;
 
+    await this.reclaimPreferredPort(this.config.frontendPort);
     const port = await this.findFreePort(this.config.frontendPort);
     this.runtimeFrontendPort = port;
     if (port !== this.config.frontendPort) {
