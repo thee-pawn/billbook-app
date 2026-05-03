@@ -82,15 +82,33 @@ function startBackend() {
 }
 
 /**
- * Gracefully terminates the backend child process.
- * Called before the app quits.
+ * Gracefully terminates the backend child process and waits for it to exit.
+ * Returns a Promise that resolves once the process is fully dead so callers
+ * (e.g. the auto-updater) can safely replace the executable.
  */
 function stopBackend() {
-  if (backendProcess) {
+  return new Promise((resolve) => {
+    if (!backendProcess) {
+      resolve();
+      return;
+    }
     log.info('[Backend] Stopping backend process…');
-    backendProcess.kill('SIGTERM');
+    const proc = backendProcess;
     backendProcess = null;
-  }
+
+    const forceKillTimer = setTimeout(() => {
+      try { proc.kill('SIGKILL'); } catch { /* already dead */ }
+      resolve();
+    }, 5000);
+
+    proc.once('exit', () => {
+      clearTimeout(forceKillTimer);
+      log.info('[Backend] Process stopped.');
+      resolve();
+    });
+
+    try { proc.kill('SIGTERM'); } catch { clearTimeout(forceKillTimer); resolve(); }
+  });
 }
 
 module.exports = { startBackend, stopBackend };

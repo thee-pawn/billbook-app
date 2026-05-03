@@ -5,98 +5,249 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * Production Update Manager
+ * Production Update Manager (V2)
  *
- * Uses electron-updater to check GitHub Releases for new app versions.
+ * Two modes of operation:
+ *  1. Startup check — runs before the main window opens. If an update is
+ *     downloaded, shows a branded updating window and installs immediately.
+ *  2. Background checks — hourly while the app is running. Prompts the user
+ *     with a dialog when an update is ready; on "Restart Now" shows the
+ *     updating window and installs.
  *
- * Rate-limiting strategy (avoids GitHub API rate limits):
- *  - Checks on startup (respecting the 1-hour cooldown).
- *  - Starts an hourly interval timer after the first check.
- *  - Skips any check that is within 60 minutes of the previous one.
- *  - In development (app.isPackaged === false) all checks are skipped.
+ * Key fixes over V1:
+ *  - Backend process is killed before quitAndInstall so the installer can
+ *    replace files on both macOS and Windows.
+ *  - Uses app.exit(0) as fallback instead of app.quit() to avoid being
+ *    intercepted by event handlers.
+ *  - Updating window provides visual feedback during install.
  */
 
-const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
+const UPDATE_CHECK_INTERVAL_MS = 60 * 60 * 1000;
 const LAST_CHECK_FILENAME = 'last-update-check.json';
 
 export class UpdateManager {
   private lastCheckFile: string;
   private hourlyTimer?: NodeJS.Timeout;
   private getMainWindow: () => BrowserWindow | undefined;
+  private stopBackendFn?: () => Promise<void>;
+  private updatingWindow?: BrowserWindow;
 
-  constructor(userDataPath: string, getMainWindow: () => BrowserWindow | undefined) {
+  constructor(
+    userDataPath: string,
+    getMainWindow: () => BrowserWindow | undefined,
+    stopBackendFn?: () => Promise<void>,
+  ) {
     this.lastCheckFile = path.join(userDataPath, LAST_CHECK_FILENAME);
     this.getMainWindow = getMainWindow;
+    this.stopBackendFn = stopBackendFn;
     this.configureUpdater();
   }
 
   // ─── Configuration ──────────────────────────────────────────────────────────
 
   private configureUpdater(): void {
-    // Route all updater logs through electron-log (written to disk on Windows too)
     autoUpdater.logger = log;
     (autoUpdater.logger as any).transports.file.level = 'info';
-
-    // Download silently in the background; user is prompted after download completes.
     autoUpdater.autoDownload = true;
-
-    // Install on next quit if the user clicks "Later"
     autoUpdater.autoInstallOnAppQuit = true;
-
-    // Production defaults — GitHub Releases channel only (no downgrade / preview builds).
     autoUpdater.allowDowngrade = false;
     autoUpdater.allowPrerelease = false;
+  }
 
-    autoUpdater.on('checking-for-update', () => {
-      log.info('[Updater] Checking for update…');
-      this.sendToRenderer('update-checking');
+  // ─── Updating window ───────────────────────────────────────────────────────
+
+  private createUpdatingWindow(): BrowserWindow {
+    if (this.updatingWindow && !this.updatingWindow.isDestroyed()) {
+      return this.updatingWindow;
+    }
+
+    this.updatingWindow = new BrowserWindow({
+      width: 480,
+      height: 340,
+      resizable: false,
+      frame: false,
+      center: true,
+      show: false,
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        preload: path.join(__dirname, '..', '..', 'electron', 'updating-preload.js'),
+      },
     });
 
-    autoUpdater.on('update-not-available', () => {
-      log.info('[Updater] App is up to date.');
-      this.sendToRenderer('update-not-available');
+    this.updatingWindow.loadFile(
+      path.join(__dirname, '..', '..', 'electron', 'updating.html'),
+    );
+    this.updatingWindow.once('ready-to-show', () => {
+      if (this.updatingWindow && !this.updatingWindow.isDestroyed()) {
+        this.updatingWindow.show();
+      }
+    });
+    this.updatingWindow.on('closed', () => {
+      this.updatingWindow = undefined;
     });
 
-    autoUpdater.on('update-available', (info: UpdateInfo) => {
-      log.info('[Updater] Update available:', info.version);
-      this.sendToRenderer('update-available', { version: info.version, releaseNotes: info.releaseNotes });
-    });
+    return this.updatingWindow;
+  }
 
-    autoUpdater.on('download-progress', (progress: ProgressInfo) => {
-      const percent = Math.round(progress.percent);
-      log.info(`[Updater] Downloading… ${percent}%`);
-      this.sendToRenderer('update-download-progress', {
-        percent,
-        bytesPerSecond: Math.round(progress.bytesPerSecond),
-        transferred: progress.transferred,
-        total: progress.total,
+  private sendToUpdatingWindow(channel: string, data?: object | string): void {
+    if (this.updatingWindow && !this.updatingWindow.isDestroyed()) {
+      this.updatingWindow.webContents.send(channel, data);
+    }
+  }
+
+  closeUpdatingWindow(): void {
+    if (this.updatingWindow && !this.updatingWindow.isDestroyed()) {
+      this.updatingWindow.close();
+      this.updatingWindow = undefined;
+    }
+  }
+
+  // ─── Core: quit-and-install with cleanup ────────────────────────────────────
+
+  private async performQuitAndInstall(): Promise<void> {
+    log.info('[Updater] Performing quit-and-install…');
+    this.sendToUpdatingWindow('update:status', 'Installing update…');
+
+    if (this.stopBackendFn) {
+      this.sendToUpdatingWindow('update:status', 'Stopping services…');
+      try {
+        await this.stopBackendFn();
+      } catch (err) {
+        log.warn('[Updater] stopBackend error (continuing):', err);
+      }
+    }
+
+    this.sendToUpdatingWindow('update:status', 'Restarting…');
+    await new Promise((r) => setTimeout(r, 500));
+
+    this.setQuitForUpdateFlag(true);
+
+    const runQuitAndInstall = () => {
+      try {
+        if (process.platform === 'darwin') {
+          (autoUpdater as { quitAndInstall: (a?: boolean, b?: boolean) => void }).quitAndInstall();
+        } else {
+          autoUpdater.quitAndInstall(true, true);
+        }
+      } catch (err) {
+        log.error('[Updater] quitAndInstall threw:', err);
+        this.clearQuitForUpdateFlag();
+      }
+    };
+
+    if (process.platform === 'darwin') {
+      setTimeout(runQuitAndInstall, 1800);
+    } else {
+      setImmediate(runQuitAndInstall);
+    }
+
+    setTimeout(() => {
+      if (this.getQuitForUpdateFlag()) {
+        log.warn('[Updater] Fallback exit — process still alive after quitAndInstall');
+        this.clearQuitForUpdateFlag();
+        app.exit(0);
+      }
+    }, process.platform === 'darwin' ? 8000 : 10000);
+  }
+
+  // ─── Startup check ─────────────────────────────────────────────────────────
+
+  async checkOnStartup(): Promise<boolean> {
+    if (!app.isPackaged) {
+      log.info('[Updater] Development mode — skipping startup update check.');
+      return false;
+    }
+
+    if (process.platform === 'darwin') {
+      try {
+        if (process.execPath.includes('/Volumes/')) {
+          log.warn('[Updater] Running from disk image — skipping update.');
+          this.showMacDiskImageWarningOnce();
+          return false;
+        }
+      } catch { /* ignore */ }
+    }
+
+    return new Promise<boolean>((resolve) => {
+      let settled = false;
+      const finish = (willUpdate: boolean) => {
+        if (settled) return;
+        settled = true;
+        this.saveLastCheckTime();
+        resolve(willUpdate);
+      };
+
+      const startupTimeout = setTimeout(() => {
+        log.info('[Updater] Startup check timed out — proceeding to app.');
+        cleanup();
+        finish(false);
+      }, 30000);
+
+      const cleanup = () => {
+        clearTimeout(startupTimeout);
+        autoUpdater.removeAllListeners('update-not-available');
+        autoUpdater.removeAllListeners('update-available');
+        autoUpdater.removeAllListeners('update-downloaded');
+        autoUpdater.removeAllListeners('download-progress');
+        autoUpdater.removeAllListeners('error');
+      };
+
+      autoUpdater.once('update-not-available', () => {
+        log.info('[Updater] App is up to date.');
+        cleanup();
+        finish(false);
       });
-    });
 
-    autoUpdater.on('update-downloaded', async (info: UpdateInfo) => {
-      log.info('[Updater] Package downloaded; waiting for native macOS Squirrel updater…');
-      this.sendToRenderer('update-downloaded', { version: info.version });
-      await this.awaitNativeMacSquirrelReady();
-      log.info('[Updater] Update downloaded:', info.version);
-      await this.promptRestart(info.version);
-    });
+      autoUpdater.once('error', (err: Error) => {
+        log.error('[Updater] Startup check error:', err.message);
+        cleanup();
+        finish(false);
+      });
 
-    autoUpdater.on('error', (err: Error) => {
-      log.warn('[Updater] Error (non-fatal):', err.message);
-      this.sendToRenderer('update-error', { message: err.message });
+      autoUpdater.once('update-available', (info: UpdateInfo) => {
+        log.info(`[Updater] Update available: v${info.version}. Downloading…`);
+        this.createUpdatingWindow();
+        this.sendToUpdatingWindow('update:status', `Downloading v${info.version}…`);
+      });
+
+      autoUpdater.on('download-progress', (progress: ProgressInfo) => {
+        const pct = Math.round(progress.percent);
+        log.info(`[Updater] Downloading… ${pct}%`);
+        this.sendToUpdatingWindow('update:progress', {
+          percent: pct,
+          message: `Downloading update… ${pct}%`,
+        });
+      });
+
+      autoUpdater.once('update-downloaded', async (info: UpdateInfo) => {
+        log.info(`[Updater] v${info.version} downloaded.`);
+        cleanup();
+
+        if (!this.updatingWindow || this.updatingWindow.isDestroyed()) {
+          this.createUpdatingWindow();
+        }
+        this.sendToUpdatingWindow('update:progress', { percent: 100, message: 'Download complete.' });
+        this.sendToUpdatingWindow('update:status', 'Preparing to install…');
+
+        await this.awaitNativeMacSquirrelReady();
+
+        log.info(`[Updater] Installing v${info.version} on startup…`);
+        finish(true);
+        await this.performQuitAndInstall();
+      });
+
+      log.info('[Updater] Starting startup update check…');
+      autoUpdater.checkForUpdates().catch((err: any) => {
+        log.error('[Updater] checkForUpdates() threw:', err?.message ?? err);
+        cleanup();
+        finish(false);
+      });
     });
   }
 
-  // ─── Public API ─────────────────────────────────────────────────────────────
+  // ─── Background check ──────────────────────────────────────────────────────
 
-  /**
-   * Check for a new app version on GitHub Releases.
-   *
-   * @param force  If true, bypasses the 1-hour cooldown (e.g. manual "Check for updates").
-   *
-   * Safe to call from startup AND from the periodic timer — the cooldown guard
-   * prevents spamming GitHub's API.
-   */
   async checkForUpdates(force = false): Promise<void> {
     if (!app.isPackaged) {
       log.info('[Updater] Development mode — update check skipped.');
@@ -106,15 +257,11 @@ export class UpdateManager {
     if (process.platform === 'darwin') {
       try {
         if (process.execPath.includes('/Volumes/')) {
-          log.warn(
-            '[Updater] Skipping update check — executable path is under /Volumes/ (disk image or external volume).',
-          );
+          log.warn('[Updater] Running from disk image — skipping.');
           this.showMacDiskImageWarningOnce();
           return;
         }
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
     }
 
     if (!force && this.isWithinCooldown()) {
@@ -123,46 +270,70 @@ export class UpdateManager {
       return;
     }
 
-    log.info('[Updater] Initiating update check…');
+    log.info('[Updater] Initiating background update check…');
+
+    // Wire up one-shot listeners for this check cycle
+    const done = new Promise<void>((resolve) => {
+      let settled = false;
+      const finish = () => { if (!settled) { settled = true; resolve(); } };
+
+      autoUpdater.once('update-not-available', () => {
+        log.info('[Updater] App is up to date.');
+        finish();
+      });
+
+      autoUpdater.once('error', (err: Error) => {
+        log.warn('[Updater] Background check error:', err.message);
+        finish();
+      });
+
+      autoUpdater.once('update-available', (info: UpdateInfo) => {
+        log.info(`[Updater] Background: update v${info.version} available, downloading…`);
+        this.sendToRenderer('update-available', { version: info.version, releaseNotes: info.releaseNotes });
+        finish();
+      });
+
+      autoUpdater.on('download-progress', (progress: ProgressInfo) => {
+        const percent = Math.round(progress.percent);
+        log.info(`[Updater] Background downloading… ${percent}%`);
+        this.sendToRenderer('update-download-progress', {
+          percent,
+          bytesPerSecond: Math.round(progress.bytesPerSecond),
+          transferred: progress.transferred,
+          total: progress.total,
+        });
+      });
+
+      autoUpdater.once('update-downloaded', async (info: UpdateInfo) => {
+        log.info(`[Updater] Background: v${info.version} downloaded.`);
+        this.sendToRenderer('update-downloaded', { version: info.version });
+        await this.awaitNativeMacSquirrelReady();
+        await this.promptRestart(info.version);
+      });
+    });
 
     try {
       await autoUpdater.checkForUpdates();
     } catch (err: any) {
-      log.warn('[Updater] checkForUpdates threw (non-fatal):', err?.message ?? err);
+      log.warn('[Updater] checkForUpdates threw:', err?.message ?? err);
     } finally {
-      // Record check attempt after the HTTP round-trip finishes so failed checks
-      // still respect cooldown, but we never timestamp *before* the request runs.
-      if (app.isPackaged) {
-        this.saveLastCheckTime();
-      }
+      if (app.isPackaged) this.saveLastCheckTime();
     }
+
+    await done;
   }
 
-  /**
-   * Start the recurring hourly update check.
-   * Call once after the app window is fully ready.
-   * The timer is unreffed so it never prevents Node from exiting.
-   */
   startPeriodicChecks(): void {
     if (this.hourlyTimer) return;
-
     this.hourlyTimer = setInterval(() => {
       this.checkForUpdates().catch((err) =>
         log.warn('[Updater] Periodic check error:', err),
       );
     }, UPDATE_CHECK_INTERVAL_MS);
-
-    // Allow the process to exit naturally even when the timer is pending.
-    if (this.hourlyTimer.unref) {
-      this.hourlyTimer.unref();
-    }
-
-    log.info('[Updater] Hourly update checks started (interval: 60 min).');
+    if (this.hourlyTimer.unref) this.hourlyTimer.unref();
+    log.info('[Updater] Hourly update checks started.');
   }
 
-  /**
-   * Stop the periodic timer. Call during app cleanup / before quit.
-   */
   stopPeriodicChecks(): void {
     if (this.hourlyTimer) {
       clearInterval(this.hourlyTimer);
@@ -179,9 +350,7 @@ export class UpdateManager {
         const data = JSON.parse(fs.readFileSync(this.lastCheckFile, 'utf-8'));
         return typeof data.lastCheck === 'number' ? data.lastCheck : 0;
       }
-    } catch {
-      // Ignore corrupt/missing file — treat as never checked.
-    }
+    } catch { /* ignore */ }
     return 0;
   }
 
@@ -201,11 +370,8 @@ export class UpdateManager {
     return Date.now() - this.getLastCheckTime() < UPDATE_CHECK_INTERVAL_MS;
   }
 
-  /**
-   * MacUpdater emits JS "update-downloaded" before Squirrel.Mac finishes ingesting
-   * the ZIP via the local proxy. Restart/install must wait for Electron native
-   * autoUpdater "update-downloaded" or installs silently fail and repeat forever.
-   */
+  // ─── macOS Squirrel wait ────────────────────────────────────────────────────
+
   private async awaitNativeMacSquirrelReady(): Promise<void> {
     if (process.platform !== 'darwin') return;
     const nativeAu = electron.autoUpdater;
@@ -214,10 +380,7 @@ export class UpdateManager {
       return;
     }
     await new Promise<void>((resolve) => {
-      const finish = () => {
-        clearTimeout(failSafe);
-        resolve();
-      };
+      const finish = () => { clearTimeout(failSafe); resolve(); };
       nativeAu.once('update-downloaded', finish);
       const failSafe = setTimeout(finish, 20_000);
     });
@@ -226,11 +389,7 @@ export class UpdateManager {
   private showMacDiskImageWarningOnce(): void {
     const flag = path.join(path.dirname(this.lastCheckFile), '.billbook_dmg_update_warning_shown');
     if (fs.existsSync(flag)) return;
-    try {
-      fs.writeFileSync(flag, new Date().toISOString(), 'utf-8');
-    } catch {
-      /* ignore */
-    }
+    try { fs.writeFileSync(flag, new Date().toISOString(), 'utf-8'); } catch { /* ignore */ }
     try {
       dialog.showMessageBoxSync({
         type: 'warning',
@@ -239,95 +398,46 @@ export class UpdateManager {
         detail:
           'You appear to be running from a disk image or external volume. Quit, drag BillBookPlus into Applications, eject the disk image if needed, then open it from there.',
       });
-    } catch {
-      /* ignore */
-    }
+    } catch { /* ignore */ }
   }
 
-  // ─── Restart prompt ─────────────────────────────────────────────────────────
+  // ─── Background restart prompt ──────────────────────────────────────────────
 
   private async promptRestart(version: string): Promise<void> {
     const win = this.getMainWindow();
-    if (!win || win.isDestroyed()) {
-      // No window — install silently on quit.
-      return;
-    }
+    if (!win || win.isDestroyed()) return;
 
-    const macDetail =
-      'If you choose Later, fully quit with ⌘Q (BillBookPlus menu → Quit). Closing only the main window leaves the app running, so the update may not install until you quit.\n\n' +
-      'If Restart Now does nothing, install from Applications — updates cannot replace an app run from the disk image.';
+    const laterHint = process.platform === 'darwin'
+      ? 'If you choose Later, fully quit with ⌘Q (BillBookPlus menu → Quit). ' +
+        'Closing only the main window leaves the app running, so the update will not install.\n\n' +
+        'If Restart Now still fails, ensure BillBookPlus is in Applications.'
+      : 'Restart now to apply the update, or choose Later and quit the app when you are ready.';
 
     const { response } = await dialog.showMessageBox(win, {
       type: 'info',
       title: 'Update ready to install',
       message: `BillBookPlus ${version} has been downloaded.`,
-      detail:
-        process.platform === 'darwin'
-          ? macDetail
-          : 'Restart now to apply the update, or continue working and it will be installed when you quit.',
+      detail: laterHint,
       buttons: ['Restart now', 'Later'],
       defaultId: 0,
       cancelId: 1,
     });
 
     if (response === 0) {
-      this.scheduleQuitAndInstall();
+      this.createUpdatingWindow();
+      this.sendToUpdatingWindow('update:status', 'Installing update…');
+      await this.performQuitAndInstall();
     }
   }
 
-  /**
-   * macOS: defer quitAndInstall — Squirrel.Mac / ShipIt + Electron often need a beat
-   * after "update-downloaded" before the native installer can take over; immediate
-   * calls are a common source of silent failures.
-   * Windows NSIS: quit immediately; optional fallback quit if the process stalls.
-   */
-  private scheduleQuitAndInstall(): void {
-    const runQuitAndInstall = () => {
-      try {
-        if (process.platform === 'darwin') {
-          (autoUpdater as { quitAndInstall: (a?: boolean, b?: boolean) => void }).quitAndInstall();
-        } else {
-          autoUpdater.quitAndInstall(true, true);
-        }
-      } catch (err) {
-        log.error('[Updater] quitAndInstall failed:', err);
-        this.clearQuitForUpdateFlag();
-      }
-    };
-
-    if (process.platform === 'darwin') {
-      this.setQuitForUpdateFlag(true);
-      // Legacy updater.js used 1800ms; keep aligned with proven BillBook builds.
-      setTimeout(runQuitAndInstall, 1800);
-      setTimeout(() => {
-        if (this.getQuitForUpdateFlag() && !(app as { isQuitting?: boolean }).isQuitting) {
-          log.warn('[Updater] macOS fallback app.quit() — still running after restart prompt');
-          this.clearQuitForUpdateFlag();
-          app.quit();
-        }
-      }, 6000);
-      return;
-    }
-
-    setImmediate(runQuitAndInstall);
-
-    // NSIS / Linux: occasionally the process stays alive — force exit so the installer can run.
-    setTimeout(() => {
-      if (!(app as { isQuitting?: boolean }).isQuitting) {
-        log.warn('[Updater] Fallback app.quit() — installer did not exit the process');
-        app.quit();
-      }
-    }, 8000);
-  }
+  // ─── Flags ──────────────────────────────────────────────────────────────────
 
   private setQuitForUpdateFlag(value: boolean): void {
-    (globalThis as typeof globalThis & { __billbookQuitForUpdate?: boolean }).__billbookQuitForUpdate =
-      value;
+    (globalThis as typeof globalThis & { __billbookQuitForUpdate?: boolean }).__billbookQuitForUpdate = value;
   }
 
   private getQuitForUpdateFlag(): boolean {
-    return !!(globalThis as typeof globalThis & { __billbookQuitForUpdate?: boolean })
-      .__billbookQuitForUpdate;
+    return !!(globalThis as typeof globalThis & { __billbookQuitForUpdate?: boolean }).__billbookQuitForUpdate;
   }
 
   private clearQuitForUpdateFlag(): void {

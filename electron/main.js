@@ -3,11 +3,22 @@
 const { app, BrowserWindow, screen } = require('electron');
 const path = require('path');
 const log = require('electron-log');
-const { checkForUpdates } = require('./updater');
+const {
+  checkOnStartup,
+  checkInBackground,
+  startPeriodicChecks,
+  stopPeriodicChecks,
+  setStopBackend,
+  closeUpdatingWindow,
+} = require('./updater');
 const { startBackend, stopBackend } = require('./backend');
 const { needsSetup, ensurePlaywrightBrowsers } = require('./setup');
 
 let mainWindow = null;
+
+// Give the updater a reference to stopBackend so it can kill the backend
+// before quitAndInstall replaces the executable.
+setStopBackend(stopBackend);
 
 /**
  * macOS "About" reads Info.plist by default; if CFBundle* was wrong at pack time,
@@ -91,8 +102,6 @@ function createMainWindow() {
 
   attachAdaptiveContentZoom(mainWindow);
 
-  // In packaged mode the frontend is copied to resources/frontend/ via extraResources.
-  // In development point directly at the Vite build output.
   const indexPath = app.isPackaged
     ? path.join(process.resourcesPath, 'frontend', 'index.html')
     : path.join(__dirname, '../../billbook-fe/dist', 'index.html');
@@ -108,11 +117,6 @@ function createMainWindow() {
 
 // ── First-run setup window ────────────────────────────────────────────────────
 
-/**
- * Shows a frameless setup window that downloads Playwright's Chromium binary.
- * Resolves once the download finishes (or fails — startup is never blocked).
- * Shown when dependencies are missing or incomplete; skipped when everything is ready.
- */
 function runFirstTimeSetup() {
   return new Promise((resolve) => {
     const setupWindow = new BrowserWindow({
@@ -135,7 +139,6 @@ function runFirstTimeSetup() {
       setupWindow.show();
 
       ensurePlaywrightBrowsers((msg) => {
-        // Forward each output line to the renderer for display.
         if (!setupWindow.isDestroyed()) {
           setupWindow.webContents.send('setup:progress', msg);
         }
@@ -144,7 +147,6 @@ function runFirstTimeSetup() {
           if (!setupWindow.isDestroyed()) {
             setupWindow.webContents.send('setup:complete');
           }
-          // Brief pause so the user sees "Setup complete!" before the window closes.
           setTimeout(() => {
             if (!setupWindow.isDestroyed()) setupWindow.close();
             resolve();
@@ -155,8 +157,6 @@ function runFirstTimeSetup() {
           if (!setupWindow.isDestroyed()) {
             setupWindow.webContents.send('setup:error', err.message);
           }
-          // Give the user a moment to read the error, then continue anyway.
-          // The setup window will appear again on the next launch to retry.
           setTimeout(() => {
             if (!setupWindow.isDestroyed()) setupWindow.close();
             resolve();
@@ -171,23 +171,31 @@ function runFirstTimeSetup() {
 app.whenReady().then(async () => {
   syncAboutPanelFromPackageJson();
 
-  // Step 1 — Dependency setup: verify Node runtime (embedded when packaged),
-  //           bundled Playwright, then download Chromium if needed.
+  // Step 1 — First-run dependency setup (Playwright Chromium download).
   if (needsSetup()) {
     log.info('[Main] Setup required — checking runtime and Playwright browsers.');
     await runFirstTimeSetup();
   }
 
-  // Step 2 — Start the WhatsApp automation backend child process.
+  // Step 2 — Check for app updates BEFORE starting services.
+  // If an update is downloaded, it installs and restarts — we never reach Step 3.
+  const willUpdate = await checkOnStartup();
+  if (willUpdate) {
+    log.info('[Main] Update in progress — skipping service start.');
+    return;
+  }
+
+  // Close the updating window if it was briefly shown for a "no update" check.
+  closeUpdatingWindow();
+
+  // Step 3 — Start the WhatsApp automation backend child process.
   await startBackend();
 
-  // Step 3 — Open the main window (do not wait for update download).
+  // Step 4 — Open the main window.
   createMainWindow();
 
-  // Step 4 — Check / download updates in the background; prompt when ready to install.
-  checkForUpdates().catch((err) =>
-    log.error('[Main] checkForUpdates failed:', err?.message ?? err),
-  );
+  // Step 5 — Start periodic background update checks (hourly).
+  startPeriodicChecks();
 
   // macOS: recreate window when dock icon is clicked and no windows are open.
   app.on('activate', () => {
@@ -197,22 +205,22 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('window-all-closed', () => {
-  stopBackend();
+app.on('window-all-closed', async () => {
+  stopPeriodicChecks();
+  await stopBackend();
+
   if (process.platform !== 'darwin') {
     app.quit();
     return;
   }
-  // macOS: by default the app stays open in the Dock with no windows, so the process
-  // never exits and Squirrel cannot finish. After "Restart Now" we set
-  // __billbookQuitForUpdate — defer app.quit() so native quitAndInstall / ShipIt gets a
-  // head start (immediate quit was racing the swap; no quit at all = "nothing happens").
+
+  // macOS: after "Restart Now" the updater sets __billbookQuitForUpdate.
+  // Defer app.exit() so Squirrel.Mac / ShipIt gets a head start on the swap.
   if (global.__billbookQuitForUpdate) {
-    const doQuit = () => {
+    setTimeout(() => {
       global.__billbookQuitForUpdate = false;
-      log.info('[Main] app.quit() after update (deferred, darwin)');
-      app.quit();
-    };
-    setTimeout(doQuit, 2000);
+      log.info('[Main] Deferred app.exit() after macOS update install');
+      app.exit(0);
+    }, 2000);
   }
 });

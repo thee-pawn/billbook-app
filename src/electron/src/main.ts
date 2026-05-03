@@ -51,10 +51,10 @@ class Application {
     this.dependencyManager = new DependencyManager(this.pathResolver);
     this.serviceManager = new ServiceManager(this.pathResolver, this.config);
 
-    // UpdateManager takes a userDataPath and a live reference to the main window.
     this.updateManager = new UpdateManager(
       this.pathResolver.getUserDataPath(),
       () => this.mainWindow,
+      () => this.serviceManager.stopAllServicesForExit(),
     );
   }
   
@@ -313,6 +313,15 @@ class Application {
    * timer is armed for subsequent checks.
    */
   private async v2NormalStart(): Promise<void> {
+    // Check for updates BEFORE starting services. If an update is downloaded,
+    // it installs and restarts — we never reach service start.
+    const willUpdate = await this.updateManager.checkOnStartup();
+    if (willUpdate) {
+      console.log('[V2] Update in progress — skipping service start.');
+      return;
+    }
+    this.updateManager.closeUpdatingWindow();
+
     this.createMainWindowLoading();
 
     try {
@@ -329,23 +338,16 @@ class Application {
       this.isInitialized = true;
       this.sendProgress('complete', 'Ready', 100);
 
-      // Use the actual runtime port — may differ from config.frontendPort if
-      // the preferred port was already occupied by another process.
       const frontendUrl = `http://localhost:${this.serviceManager.getFrontendPort()}/login`;
       if (this.mainWindow && !this.mainWindow.isDestroyed()) {
         this.mainWindow.loadURL(frontendUrl);
         this.mainWindow.show();
       }
 
-      // Check for a new app version in the background.
-      // Skipped automatically if checked within the last hour.
-      // Hourly timer keeps checking while the app is open.
+      // Start periodic background checks (hourly) after the UI settles.
       setTimeout(() => {
-        this.updateManager.checkForUpdates().catch((err) =>
-          console.warn('[Main] Startup update check failed:', err),
-        );
         this.updateManager.startPeriodicChecks();
-      }, 5_000); // 5-second grace period so the UI settles first.
+      }, 5_000);
 
     } catch (error: any) {
       console.error('V2 normal start failed:', error);
@@ -671,8 +673,6 @@ app.on('ready', async () => {
 });
 
 app.on('window-all-closed', () => {
-  // On macOS, apps typically stay open until explicitly quit — unless we are
-  // finishing an auto-update (quitAndInstall); align with electron/main.js + updater.js.
   if (process.platform !== 'darwin') {
     app.quit();
     return;
@@ -681,8 +681,8 @@ app.on('window-all-closed', () => {
   if (g.__billbookQuitForUpdate) {
     setTimeout(() => {
       g.__billbookQuitForUpdate = false;
-      console.log('[Main] Deferred app.quit() after macOS update install');
-      app.quit();
+      console.log('[Main] Deferred app.exit() after macOS update install');
+      app.exit(0);
     }, 2000);
   }
 });

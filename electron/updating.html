@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline';" />
+  <title>BillBookPlus – Updating</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #14b8a6 0%, #0d9488 100%);
+      color: #fff;
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      -webkit-app-region: drag;
+      overflow: hidden;
+      padding: 12px 10px;
+    }
+
+    .card {
+      width: min(420px, calc(100vw - 24px));
+      text-align: center;
+      padding: 0 24px;
+      flex-shrink: 0;
+    }
+
+    .logo {
+      width: 72px;
+      height: 72px;
+      border-radius: 20px;
+      background: rgba(255, 255, 255, 0.22);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 28px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+    }
+    .logo svg { width: 36px; height: 36px; fill: #fff; }
+
+    h1 {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      margin-bottom: 6px;
+      color: #fff;
+    }
+    .subtitle {
+      font-size: 13.5px;
+      color: rgba(255, 255, 255, 0.88);
+      line-height: 1.5;
+      margin-bottom: 36px;
+    }
+
+    .progress-track {
+      height: 6px;
+      width: 100%;
+      background: rgba(0, 0, 0, 0.15);
+      border-radius: 99px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, #ccfbf1, #f0fdfa);
+      transition: width 0.5s cubic-bezier(.4,0,.2,1);
+    }
+    .progress-fill.indeterminate {
+      animation: slide 1.8s ease-in-out infinite;
+      width: 40% !important;
+    }
+    @keyframes slide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(350%); }
+    }
+    .progress-fill.done    { background: #22c55e; width: 100% !important; animation: none; }
+    .progress-fill.errored { background: #ef4444; width: 100% !important; animation: none; }
+
+    .status {
+      font-size: 12.5px;
+      color: rgba(255, 255, 255, 0.9);
+      min-height: 18px;
+      transition: color 0.3s;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .status.errored { color: #fecaca; }
+
+    .note {
+      margin-top: 32px;
+      font-size: 11.5px;
+      color: rgba(255, 255, 255, 0.72);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0
+                 2-2V5a2 2 0 0 0-2-2zm-7 3a3 3 0 1 1 0 6 3 3 0 0 1
+                 0-6zm6 12H6v-.6C6 15.1 8.7 13 12 13s6 2.1 6 4.4V18z"/>
+      </svg>
+    </div>
+
+    <h1>Updating BillBookPlus</h1>
+    <p class="subtitle" id="subtitle">A new version is being installed.<br>The app will restart automatically.</p>
+
+    <div class="progress-track">
+      <div class="progress-fill indeterminate" id="bar"></div>
+    </div>
+
+    <p class="status" id="status">Preparing update…</p>
+
+    <p class="note">Please do not close this window.</p>
+  </div>
+
+  <script>
+    var bar      = document.getElementById('bar');
+    var status   = document.getElementById('status');
+    var subtitle = document.getElementById('subtitle');
+
+    window.updater.onProgress(function(data) {
+      if (typeof data.percent === 'number' && data.percent > 0) {
+        bar.classList.remove('indeterminate');
+        bar.style.width = Math.min(data.percent, 100) + '%';
+      }
+      if (data.message) status.textContent = data.message;
+    });
+
+    window.updater.onStatus(function(msg) {
+      if (msg) status.textContent = msg;
+    });
+
+    window.updater.onError(function(err) {
+      bar.className    = 'progress-fill errored';
+      status.className = 'status errored';
+      status.textContent = 'Update failed: ' + err;
+      subtitle.textContent = 'The app will continue with the current version.';
+    });
+  </script>
+</body>
+</html>
