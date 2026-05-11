@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline';" />
+  <title>BillBookPlus</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #14b8a6 0%, #0d9488 100%);
+      color: #fff;
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      user-select: none;
+      -webkit-app-region: drag;
+      overflow: hidden;
+    }
+
+    .card {
+      width: min(380px, calc(100vw - 48px));
+      text-align: center;
+      padding: 0 24px;
+    }
+
+    /* ── Logo ── */
+    .logo {
+      width: 80px;
+      height: 80px;
+      border-radius: 22px;
+      background: rgba(255, 255, 255, 0.22);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin: 0 auto 28px;
+      box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+      animation: logoIn 0.4s cubic-bezier(.34,1.56,.64,1) both;
+    }
+    .logo svg { width: 40px; height: 40px; fill: #fff; }
+
+    @keyframes logoIn {
+      from { opacity: 0; transform: scale(0.7); }
+      to   { opacity: 1; transform: scale(1); }
+    }
+
+    /* ── Title ── */
+    h1 {
+      font-size: 26px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 6px;
+      color: #fff;
+      animation: fadeUp 0.4s 0.1s ease both;
+    }
+    .subtitle {
+      font-size: 13px;
+      color: rgba(255, 255, 255, 0.82);
+      line-height: 1.5;
+      margin-bottom: 40px;
+      animation: fadeUp 0.4s 0.15s ease both;
+    }
+
+    @keyframes fadeUp {
+      from { opacity: 0; transform: translateY(10px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    /* ── Progress bar ── */
+    .progress-track {
+      height: 5px;
+      width: 100%;
+      background: rgba(0, 0, 0, 0.18);
+      border-radius: 99px;
+      overflow: hidden;
+      margin-bottom: 16px;
+      animation: fadeUp 0.4s 0.2s ease both;
+    }
+    .progress-fill {
+      height: 100%;
+      width: 40%;
+      border-radius: 99px;
+      background: linear-gradient(90deg, rgba(255,255,255,0.6), #fff);
+      animation: slide 1.6s ease-in-out infinite;
+    }
+    @keyframes slide {
+      0%   { transform: translateX(-200%); }
+      100% { transform: translateX(400%); }
+    }
+    .progress-fill.done {
+      background: #4ade80;
+      width: 100% !important;
+      animation: none;
+      transition: width 0.3s ease;
+    }
+
+    /* ── Status label ── */
+    .status {
+      font-size: 12px;
+      color: rgba(255, 255, 255, 0.78);
+      min-height: 18px;
+      animation: fadeUp 0.4s 0.25s ease both;
+      transition: color 0.3s;
+    }
+    .status.done { color: #d1fae5; }
+
+    /* ── Version ── */
+    .version {
+      position: fixed;
+      bottom: 18px;
+      left: 0; right: 0;
+      text-align: center;
+      font-size: 11px;
+      color: rgba(255,255,255,0.45);
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+
+    <div class="logo">
+      <svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path d="M19 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0
+                 2-2V5a2 2 0 0 0-2-2zm-7 3a3 3 0 1 1 0 6 3 3 0 0 1
+                 0-6zm6 12H6v-.6C6 15.1 8.7 13 12 13s6 2.1 6 4.4V18z"/>
+      </svg>
+    </div>
+
+    <h1>BillBookPlus</h1>
+    <p class="subtitle">Starting up, please wait…</p>
+
+    <div class="progress-track">
+      <div class="progress-fill" id="bar"></div>
+    </div>
+
+    <p class="status" id="status">Launching backend service…</p>
+
+  </div>
+
+  <p class="version" id="version"></p>
+
+  <script>
+    const bar    = document.getElementById('bar');
+    const status = document.getElementById('status');
+    const ver    = document.getElementById('version');
+
+    window.loading.onReady(function () {
+      bar.className    = 'progress-fill done';
+      status.className = 'status done';
+      status.textContent = '✓  Ready';
+    });
+
+    window.loading.onStatus(function (msg) {
+      if (msg) status.textContent = msg;
+    });
+
+    window.loading.getVersion(function (v) {
+      if (v) ver.textContent = 'v' + v;
+    });
+  </script>
+</body>
+</html>

@@ -3,21 +3,25 @@
 const { app } = require('electron');
 const { spawn } = require('child_process');
 const path = require('path');
+const http = require('http');
 const log = require('electron-log');
 
 let backendProcess = null;
 
 /**
- * Spawns the WhatsApp automation backend as a child process.
+ * Spawns the WhatsApp automation backend as a child process and waits until
+ * the HTTP server is actually accepting requests before resolving.
+ *
+ * Two signals are used in combination:
+ *  1. `BILLBOOK_BACKEND_PORT=<n>` written to stdout by server.ts — signals
+ *     that Express has bound the port.
+ *  2. A health-check poll of GET /api/health as a belt-and-suspenders fallback.
  *
  * Packaged mode:  uses process.execPath (the Electron binary) with
  *                 ELECTRON_RUN_AS_NODE=1 so it acts as a plain Node runtime —
  *                 no Node.js installation required on the end-user's machine.
  *
  * Development:    uses the local `node` binary for simplicity.
- *
- * Returns a Promise that resolves after 1 500 ms to give the server time to
- * bind its port before the window loads.
  */
 function startBackend() {
   const serverPath = app.isPackaged
@@ -28,14 +32,10 @@ function startBackend() {
     ? path.join(process.resourcesPath, 'backend')
     : path.join(__dirname, '../../whatsapp_automation');
 
-  // Directory that contains playwright/playwright-core node_modules in the
-  // packaged app (copied there via extraResources in electron-builder.yml).
   const nodeModulesPath = app.isPackaged
     ? path.join(process.resourcesPath, 'backend', 'node_modules')
     : path.join(__dirname, '../../whatsapp_automation/node_modules');
 
-  // Playwright browser binaries are downloaded on first launch by setup.js
-  // into the app's userData folder — same path used here so the backend finds them.
   const playwrightBrowsersPath = path.join(app.getPath('userData'), 'playwright-browsers');
 
   const nodeBin = app.isPackaged ? process.execPath : 'node';
@@ -46,26 +46,14 @@ function startBackend() {
     cwd: backendCwd,
     env: {
       ...process.env,
-      // Tell Electron to behave as a plain Node runtime when packaged.
       ELECTRON_RUN_AS_NODE: '1',
       PORT: '4242',
       NODE_ENV: 'production',
-      // Let require() resolve playwright from the bundled node_modules.
       NODE_PATH: nodeModulesPath,
-      // Playwright will look here for browser binaries (downloads on first run).
       PLAYWRIGHT_BROWSERS_PATH: playwrightBrowsersPath,
-      // Use the app's userData folder for WhatsApp session storage.
       USER_DATA_DIR: path.join(app.getPath('userData'), 'session_data'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
-  });
-
-  backendProcess.stdout.on('data', (data) => {
-    log.info(`[Backend] ${data.toString().trimEnd()}`);
-  });
-
-  backendProcess.stderr.on('data', (data) => {
-    log.warn(`[Backend] ${data.toString().trimEnd()}`);
   });
 
   backendProcess.on('exit', (code, signal) => {
@@ -77,14 +65,69 @@ function startBackend() {
     log.error('[Backend] Failed to start process:', err.message);
   });
 
-  // Give the server 1.5 s to bind the port before the window opens.
-  return new Promise((resolve) => setTimeout(resolve, 1500));
+  // ── Wait for the backend to be ready ───────────────────────────────────────
+  return new Promise((resolve) => {
+    let resolved = false;
+    let detectedPort = 4242; // default; updated from stdout signal
+
+    const done = () => {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(hardTimeout);
+      clearInterval(pollInterval);
+      log.info(`[Backend] Ready on port ${detectedPort}`);
+      resolve();
+    };
+
+    // Hard cap: open the window anyway after 15 s even if health-check never
+    // succeeds (e.g. slow machine / antivirus scanning the process).
+    const hardTimeout = setTimeout(() => {
+      log.warn('[Backend] Startup timeout reached — opening window anyway');
+      done();
+    }, 15000);
+
+    // ── Signal 1: stdout "BILLBOOK_BACKEND_PORT=<n>" ─────────────────────────
+    // server.ts writes this the moment Express calls its listen() callback.
+    let stdoutBuffer = '';
+    backendProcess.stdout.on('data', (data) => {
+      const text = data.toString();
+      stdoutBuffer += text;
+      log.info(`[Backend] ${text.trimEnd()}`);
+
+      const match = stdoutBuffer.match(/BILLBOOK_BACKEND_PORT=(\d+)/);
+      if (match) {
+        detectedPort = parseInt(match[1], 10);
+        // The port signal means the TCP socket is bound — we're ready.
+        done();
+      }
+    });
+
+    backendProcess.stderr.on('data', (data) => {
+      log.warn(`[Backend] ${data.toString().trimEnd()}`);
+    });
+
+    // ── Signal 2: health-check poll (belt-and-suspenders) ────────────────────
+    // Start polling after a short head-start so we don't hammer the port
+    // before the process has even had time to load Node modules.
+    const pollInterval = setInterval(() => {
+      if (resolved) { clearInterval(pollInterval); return; }
+
+      const req = http.get(
+        `http://127.0.0.1:${detectedPort}/api/health`,
+        { timeout: 1000 },
+        (res) => {
+          if (res.statusCode === 200) done();
+          res.resume(); // discard body
+        },
+      );
+      req.on('error', () => { /* still starting — ignore */ });
+      req.on('timeout', () => req.destroy());
+    }, 500);
+  });
 }
 
 /**
  * Gracefully terminates the backend child process and waits for it to exit.
- * Returns a Promise that resolves once the process is fully dead so callers
- * (e.g. the auto-updater) can safely replace the executable.
  */
 function stopBackend() {
   return new Promise((resolve) => {

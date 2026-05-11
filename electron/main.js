@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, screen } = require('electron');
+const { app, BrowserWindow, ipcMain, screen } = require('electron');
 const path = require('path');
 const log = require('electron-log');
 const {
@@ -15,6 +15,7 @@ const { startBackend, stopBackend } = require('./backend');
 const { needsSetup, ensurePlaywrightBrowsers } = require('./setup');
 
 let mainWindow = null;
+let loadingWindow = null;
 
 // Give the updater a reference to stopBackend so it can kill the backend
 // before quitAndInstall replaces the executable.
@@ -85,6 +86,49 @@ function attachAdaptiveContentZoom(win) {
   win.webContents.on('did-finish-load', apply);
   win.once('ready-to-show', () => setTimeout(apply, 0));
 }
+
+// ── Loading / splash window ───────────────────────────────────────────────────
+
+function createLoadingWindow() {
+  loadingWindow = new BrowserWindow({
+    width: 420,
+    height: 300,
+    resizable: false,
+    frame: false,
+    center: true,
+    show: false,
+    webPreferences: {
+      nodeIntegration: false,
+      contextIsolation: true,
+      preload: path.join(__dirname, 'loading-preload.js'),
+    },
+  });
+
+  loadingWindow.loadFile(path.join(__dirname, 'loading.html'));
+
+  loadingWindow.once('ready-to-show', () => {
+    if (loadingWindow && !loadingWindow.isDestroyed()) loadingWindow.show();
+  });
+
+  loadingWindow.on('closed', () => { loadingWindow = null; });
+}
+
+function sendLoadingStatus(msg) {
+  if (loadingWindow && !loadingWindow.isDestroyed()) {
+    loadingWindow.webContents.send('loading:status', msg);
+  }
+}
+
+function closeLoadingWindow() {
+  if (!loadingWindow || loadingWindow.isDestroyed()) return;
+  // Signal "ready", wait briefly so the user sees the tick, then close.
+  loadingWindow.webContents.send('loading:ready');
+  setTimeout(() => {
+    if (loadingWindow && !loadingWindow.isDestroyed()) loadingWindow.close();
+  }, 600);
+}
+
+ipcMain.handle('loading:version', () => app.getVersion());
 
 // ── Main application window ───────────────────────────────────────────────────
 
@@ -188,13 +232,19 @@ app.whenReady().then(async () => {
   // Close the updating window if it was briefly shown for a "no update" check.
   closeUpdatingWindow();
 
-  // Step 3 — Start the WhatsApp automation backend child process.
+  // Step 3 — Show the loading screen while the backend starts.
+  createLoadingWindow();
+  sendLoadingStatus('Launching backend service…');
+
+  // Step 4 — Start the WhatsApp automation backend child process.
+  // startBackend() now resolves only when the server is actually ready.
   await startBackend();
 
-  // Step 4 — Open the main window.
+  // Step 5 — Backend is up: close loading screen and open the main window.
+  closeLoadingWindow();
   createMainWindow();
 
-  // Step 5 — Start periodic background update checks (hourly).
+  // Step 6 — Start periodic background update checks (hourly).
   startPeriodicChecks();
 
   // macOS: recreate window when dock icon is clicked and no windows are open.

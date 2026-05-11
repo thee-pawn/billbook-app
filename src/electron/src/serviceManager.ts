@@ -984,6 +984,7 @@ VITE_API_URL=http://localhost:${this.config.backendPort}
 # App Configuration
 VITE_APP_NAME=${this.config.appName}
 VITE_APP_ENV=production
+VITE_PUBLIC_HOME_PATH=/login
 
 # Ports (for reference)
 VITE_BACKEND_PORT=${this.config.backendPort}

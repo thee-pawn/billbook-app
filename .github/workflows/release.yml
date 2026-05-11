@@ -156,7 +156,7 @@ jobs:
       - run: npm ci
         working-directory: billbook-app
 
-      - run: npm run build
+      - run: npm run build:desktop
         working-directory: billbook-fe
 
       - run: npm run build:backend
