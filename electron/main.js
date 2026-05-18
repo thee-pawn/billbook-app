@@ -11,7 +11,7 @@ const {
   setStopBackend,
   closeUpdatingWindow,
 } = require('./updater');
-const { startBackend, stopBackend, getBackendPort } = require('./backend');
+const { startBackend, stopBackend } = require('./backend');
 const { needsSetup, ensurePlaywrightBrowsers } = require('./setup');
 
 let mainWindow = null;
@@ -130,15 +130,6 @@ function closeLoadingWindow() {
 
 ipcMain.handle('loading:version', () => app.getVersion());
 
-// Synchronous port for main-window preload (must run after startBackend()).
-ipcMain.on('billbook:get-backend-port', (event) => {
-  try {
-    event.returnValue = getBackendPort();
-  } catch {
-    event.returnValue = 4242;
-  }
-});
-
 // ── Main application window ───────────────────────────────────────────────────
 
 function createMainWindow() {
@@ -150,7 +141,6 @@ function createMainWindow() {
     webPreferences: {
       nodeIntegration: false,
       contextIsolation: true,
-      preload: path.join(__dirname, 'preload-main.js'),
     },
   });
 

@@ -8,9 +8,6 @@ const log = require('electron-log');
 
 let backendProcess = null;
 
-/** Actual listen port after startup (may differ from env PORT if 4242 was busy). */
-let resolvedBackendPort = 4242;
-
 /**
  * Spawns the WhatsApp automation backend as a child process and waits until
  * the HTTP server is actually accepting requests before resolving.
@@ -78,7 +75,6 @@ function startBackend() {
       resolved = true;
       clearTimeout(hardTimeout);
       clearInterval(pollInterval);
-      resolvedBackendPort = detectedPort;
       log.info(`[Backend] Ready on port ${detectedPort}`);
       resolve();
     };
@@ -158,8 +154,4 @@ function stopBackend() {
   });
 }
 
-function getBackendPort() {
-  return resolvedBackendPort;
-}
-
-module.exports = { startBackend, stopBackend, getBackendPort };
+module.exports = { startBackend, stopBackend };
