@@ -14,6 +14,13 @@ const {
 const { startBackend, stopBackend, getBackendPort } = require('./backend');
 const { needsSetup, ensurePlaywrightBrowsers } = require('./setup');
 
+// Only one app instance — a second launch focuses the existing window instead of
+// spawning another WhatsApp backend (which would fight for the profile lock).
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+  app.quit();
+}
+
 let mainWindow = null;
 let loadingWindow = null;
 
@@ -222,7 +229,16 @@ function runFirstTimeSetup() {
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
+app.on('second-instance', () => {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.focus();
+  }
+});
+
 app.whenReady().then(async () => {
+  if (!gotSingleInstanceLock) return;
+
   syncAboutPanelFromPackageJson();
 
   // Step 1 — First-run dependency setup (Playwright Chromium download).

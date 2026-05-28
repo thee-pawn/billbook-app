@@ -27,6 +27,11 @@ let resolvedBackendPort = 4242;
  * Development:    uses the local `node` binary for simplicity.
  */
 function startBackend() {
+  // Avoid orphaned backends (and singleton lock conflicts) if start is called twice.
+  return stopBackend().then(() => startBackendProcess());
+}
+
+function startBackendProcess() {
   const serverPath = app.isPackaged
     ? path.join(process.resourcesPath, 'backend', 'dist', 'server.js')
     : path.join(__dirname, '../../whatsapp_automation/dist', 'server.js');
