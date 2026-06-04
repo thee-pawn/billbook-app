@@ -1,6 +1,6 @@
 {
   "name": "billbook-app",
-  "version": "1.2.27",
+  "version": "1.2.28",
   "description": "BillBookPlus – appointment and billing software",
   "main": "electron/main.js",
   "author": "BillBook Team",
