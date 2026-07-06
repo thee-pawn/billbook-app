@@ -6,6 +6,7 @@ import { DependencyManager } from './dependencyManager';
 import { ServiceManager } from './serviceManager';
 import { UpdateManager } from './updateManager';
 import { loadConfig, AppConfig } from './config';
+import { attachMainWindowZoom, getDefaultMainWindowSize } from './windowZoom';
 
 // Windows: dual Chromium (Electron + Playwright) can corrupt DWM and whiten the desktop.
 if (process.platform === 'win32') {
@@ -194,27 +195,6 @@ class Application {
     });
   }
 
-  /**
-   * The web UI is laid out for a wide desktop (~1280px). The default window is
-   * 1200px, so at 100% zoom the content is slightly larger than the viewport
-   * and looks "cropped" until the user zooms out. Scale content to fit the
-   * content width, and update on resize.
-   */
-  private static readonly MAIN_CONTENT_BASELINE_WIDTH = 1280;
-  private static readonly MAIN_ZOOM_MIN = 0.5;
-  private static readonly MAIN_ZOOM_MAX = 1;
-
-  private getDefaultMainWindowSize(): { width: number; height: number } {
-    const { workAreaSize } = screen.getPrimaryDisplay();
-    const margin = 32;
-    const preferredW = 1200;
-    const preferredH = 800;
-    const width = Math.max(900, Math.min(preferredW, workAreaSize.width - margin));
-    const height = Math.max(560, Math.min(preferredH, workAreaSize.height - margin));
-    return { width, height };
-  }
-
-  /** First-run init UI (init.html): needs vertical space for stages + bar + status + logs. */
   private getInitWindowSize(): { width: number; height: number } {
     const { workAreaSize } = screen.getPrimaryDisplay();
     const margin = 48;
@@ -229,39 +209,6 @@ class Application {
       Math.max(600, workAreaSize.height - margin),
     );
     return { width, height };
-  }
-
-  private getMainWindowContentZoomFactor(win: BrowserWindow): number {
-    const cw = win.getContentBounds().width;
-    if (cw <= 0) return 1;
-    const factor = cw / Application.MAIN_CONTENT_BASELINE_WIDTH;
-    return Math.max(
-      Application.MAIN_ZOOM_MIN,
-      Math.min(Application.MAIN_ZOOM_MAX, factor),
-    );
-  }
-
-  private applyMainWindowContentZoom(win: BrowserWindow): void {
-    if (win.isDestroyed()) return;
-    const wc = win.webContents;
-    if (wc.isDestroyed()) return;
-    try {
-      wc.setZoomFactor(this.getMainWindowContentZoomFactor(win));
-    } catch {
-      // ignore
-    }
-  }
-
-  private attachAdaptiveContentZoom(win: BrowserWindow): void {
-    let resizeTimer: ReturnType<typeof setTimeout> | undefined;
-    const apply = () => this.applyMainWindowContentZoom(win);
-    const scheduleResize = () => {
-      if (resizeTimer !== undefined) clearTimeout(resizeTimer);
-      resizeTimer = setTimeout(apply, 48);
-    };
-    win.on('resize', scheduleResize);
-    win.webContents.on('did-finish-load', apply);
-    win.once('ready-to-show', () => setTimeout(apply, 0));
   }
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -361,7 +308,7 @@ class Application {
 
   /** V2: Create main window in loading state – show "BillBookPlus Loading" + spinner until services are ready */
   private createMainWindowLoading(): void {
-    const { width, height } = this.getDefaultMainWindowSize();
+    const { width, height } = getDefaultMainWindowSize();
     this.mainWindow = new BrowserWindow({
       width,
       height,
@@ -374,7 +321,7 @@ class Application {
       },
     });
 
-    this.attachAdaptiveContentZoom(this.mainWindow);
+    attachMainWindowZoom(this.mainWindow);
 
     // Loading screen is a local file; it navigates to localhost once services are ready.
     // Use a getter so navigation check always uses the actual runtime frontend port.
@@ -468,7 +415,7 @@ class Application {
    * Create the main application window (used in dev after first-time setup)
    */
   private createMainWindow(): void {
-    const { width, height } = this.getDefaultMainWindowSize();
+    const { width, height } = getDefaultMainWindowSize();
     this.mainWindow = new BrowserWindow({
       width,
       height,
@@ -481,7 +428,7 @@ class Application {
       },
     });
 
-    this.attachAdaptiveContentZoom(this.mainWindow);
+    attachMainWindowZoom(this.mainWindow);
 
     // Main window only navigates within the frontend origin.
     // Use a getter so the check always reflects the actual runtime port.
