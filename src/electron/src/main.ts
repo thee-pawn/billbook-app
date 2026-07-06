@@ -7,6 +7,11 @@ import { ServiceManager } from './serviceManager';
 import { UpdateManager } from './updateManager';
 import { loadConfig, AppConfig } from './config';
 
+// Windows: dual Chromium (Electron + Playwright) can corrupt DWM and whiten the desktop.
+if (process.platform === 'win32') {
+  app.disableHardwareAcceleration();
+}
+
 /**
  * Main Electron Process (V2)
  * First run: install deps, fetch repos, build, then start services.
