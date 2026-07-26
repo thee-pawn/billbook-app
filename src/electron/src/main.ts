@@ -24,6 +24,8 @@ if (process.platform === 'win32') {
 class Application {
   private mainWindow?: BrowserWindow;
   private initWindow?: BrowserWindow;
+  /** Reused guest window for WhatsApp Web share (avoids a new OS browser tab each send). */
+  private whatsappShareWindow?: BrowserWindow;
   private pathResolver: PathResolver;
   private dependencyManager: DependencyManager;
   private serviceManager: ServiceManager;
@@ -182,9 +184,18 @@ class Application {
       }
     });
 
-    // Deny new Electron windows; open http(s) links in the system browser
+    // Deny new Electron windows; route WhatsApp Web to one reused guest window,
+    // other http(s) / whatsapp:// links to the OS handler.
     win.webContents.setWindowOpenHandler(({ url }: { url: string }) => {
-      if (url.startsWith('http://') || url.startsWith('https://')) {
+      if (this.isWhatsAppWebShareUrl(url)) {
+        this.openOrFocusWhatsAppShareWindow(url);
+        return { action: 'deny' };
+      }
+      if (
+        url.startsWith('http://') ||
+        url.startsWith('https://') ||
+        url.startsWith('whatsapp://')
+      ) {
         shell.openExternal(url).catch((err) =>
           console.error('[Security] openExternal failed:', err),
         );
@@ -192,6 +203,70 @@ class Application {
         console.warn('[Security] Blocked window.open() for non-http URL:', url);
       }
       return { action: 'deny' };
+    });
+  }
+
+  private isWhatsAppWebShareUrl(url: string): boolean {
+    try {
+      const parsed = new URL(url);
+      return (
+        parsed.protocol === 'https:' &&
+        (parsed.hostname === 'web.whatsapp.com' ||
+          parsed.hostname === 'api.whatsapp.com' ||
+          parsed.hostname === 'wa.me' ||
+          parsed.hostname.endsWith('.whatsapp.com'))
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Open or navigate a single guest BrowserWindow for WhatsApp Web shares.
+   * Using shell.openExternal here would open a new system-browser tab on every send.
+   */
+  private openOrFocusWhatsAppShareWindow(url: string): void {
+    if (!this.isWhatsAppWebShareUrl(url) && !url.startsWith('whatsapp://')) {
+      console.warn('[Security] Refused WhatsApp share window for:', url);
+      return;
+    }
+
+    if (url.startsWith('whatsapp://')) {
+      shell.openExternal(url).catch((err) =>
+        console.error('[WhatsApp] openExternal failed:', err),
+      );
+      return;
+    }
+
+    if (this.whatsappShareWindow && !this.whatsappShareWindow.isDestroyed()) {
+      this.whatsappShareWindow.loadURL(url).catch((err) =>
+        console.error('[WhatsApp] Failed to navigate share window:', err),
+      );
+      if (this.whatsappShareWindow.isMinimized()) this.whatsappShareWindow.restore();
+      this.whatsappShareWindow.show();
+      this.whatsappShareWindow.focus();
+      return;
+    }
+
+    const { workAreaSize } = screen.getPrimaryDisplay();
+    this.whatsappShareWindow = new BrowserWindow({
+      width: Math.min(1100, workAreaSize.width - 48),
+      height: Math.min(800, workAreaSize.height - 48),
+      show: true,
+      title: 'WhatsApp',
+      webPreferences: {
+        nodeIntegration: false,
+        contextIsolation: true,
+        sandbox: true,
+      },
+    });
+
+    this.whatsappShareWindow.setMenuBarVisibility(false);
+    this.whatsappShareWindow.loadURL(url).catch((err) =>
+      console.error('[WhatsApp] Failed to load share window:', err),
+    );
+    this.whatsappShareWindow.on('closed', () => {
+      this.whatsappShareWindow = undefined;
     });
   }
 
@@ -570,9 +645,16 @@ class Application {
       app.exit(0);
     });
     
-    // Open external URL
+    // Open external URL in the system browser / OS handler (unchanged general behavior).
     ipcMain.on('open-external', (_event, url: string) => {
+      if (typeof url !== 'string' || !url) return;
       shell.openExternal(url);
+    });
+
+    // WhatsApp share: Desktop protocol or one reused WhatsApp Web guest window.
+    ipcMain.on('open-whatsapp-share', (_event, url: string) => {
+      if (typeof url !== 'string' || !url) return;
+      this.openOrFocusWhatsAppShareWindow(url);
     });
 
     // Synchronous config — called by the preload script before page JS runs so

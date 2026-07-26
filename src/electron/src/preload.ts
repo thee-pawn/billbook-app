@@ -125,10 +125,22 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   
   /**
-   * Open external URL in browser
+   * Open external URL in the system browser / OS handler.
    */
   openExternal: (url: string) => {
     ipcRenderer.send('open-external', url);
+  },
+
+  /**
+   * Open a WhatsApp share target:
+   * - whatsapp:// → Desktop app via OS protocol handler
+   * - web.whatsapp.com / api.whatsapp.com / wa.me → one reused guest window
+   *
+   * Use this for Billbook WhatsApp share flows instead of openExternal, so
+   * generic external links keep opening in the system browser.
+   */
+  openWhatsAppShare: (url: string) => {
+    ipcRenderer.send('open-whatsapp-share', url);
   },
 
   // ─── Update events ──────────────────────────────────────────────────────────
@@ -194,6 +206,7 @@ declare global {
       getConfig: () => Promise<any>;
       restartApp: () => Promise<void>;
       openExternal: (url: string) => void;
+      openWhatsAppShare: (url: string) => void;
       // Update events
       onUpdateChecking: (callback: () => void) => () => void;
       onUpdateAvailable: (callback: (info: UpdateAvailableInfo) => void) => () => void;
