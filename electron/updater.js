@@ -8,9 +8,9 @@ const path = require('path');
 const fs = require('fs');
 const {
   isMacRunFromDiskImage,
-  waitForNativeSquirrelReady,
   showDiskImageWarningOnce,
 } = require('./updater-mac-helpers');
+const { macManualUpdate } = require('./updater-mac-manual');
 
 // ── Configuration ────────────────────────────────────────────────────────────
 
@@ -111,6 +111,28 @@ async function performQuitAndInstall() {
   log.info('[Updater] Performing quit-and-install…');
   sendToUpdatingWindow('update:status', 'Installing update…');
 
+  if (process.platform === 'darwin') {
+    try {
+      await macManualUpdate({
+        log,
+        stopBackendFn,
+        sendProgress: (message, percent) => {
+          sendToUpdatingWindow('update:status', message);
+          if (typeof percent === 'number') {
+            sendToUpdatingWindow('update:progress', { percent, message });
+          }
+        },
+      });
+      return;
+    } catch (err) {
+      log.error('[Updater] macOS manual update failed:', err);
+      sendToUpdatingWindow('update:error', err?.message || 'Update failed');
+      global.__billbookQuitForUpdate = false;
+      setTimeout(() => closeUpdatingWindow(), 5000);
+      return;
+    }
+  }
+
   if (typeof stopBackendFn === 'function') {
     sendToUpdatingWindow('update:status', 'Stopping services…');
     try {
@@ -127,25 +149,12 @@ async function performQuitAndInstall() {
 
   global.__billbookQuitForUpdate = true;
 
-  const runQuitAndInstall = () => {
-    try {
-      if (process.platform === 'darwin') {
-        autoUpdater.quitAndInstall();
-      } else {
-        // NSIS: isSilent=true so it runs /S, isForceRunAfter=true to relaunch
-        autoUpdater.quitAndInstall(true, true);
-      }
-    } catch (err) {
-      log.error('[Updater] quitAndInstall threw:', err);
-      global.__billbookQuitForUpdate = false;
-    }
-  };
-
-  if (process.platform === 'darwin') {
-    // Squirrel.Mac / ShipIt needs a beat before the swap
-    setTimeout(runQuitAndInstall, 1800);
-  } else {
-    setImmediate(runQuitAndInstall);
+  try {
+    // NSIS: isSilent=true so it runs /S, isForceRunAfter=true to relaunch
+    autoUpdater.quitAndInstall(true, true);
+  } catch (err) {
+    log.error('[Updater] quitAndInstall threw:', err);
+    global.__billbookQuitForUpdate = false;
   }
 
   // Fallback: force exit if the process is still alive
@@ -155,7 +164,7 @@ async function performQuitAndInstall() {
       global.__billbookQuitForUpdate = false;
       app.exit(0);
     }
-  }, process.platform === 'darwin' ? 8000 : 10000);
+  }, 10000);
 }
 
 // ── Startup update check ─────────────────────────────────────────────────────
@@ -237,12 +246,6 @@ function checkOnStartup() {
       sendToUpdatingWindow('update:progress', { percent: 100, message: 'Download complete.' });
       sendToUpdatingWindow('update:status', 'Preparing to install…');
 
-      // macOS: wait for native Squirrel to ingest the ZIP
-      if (process.platform === 'darwin') {
-        sendToUpdatingWindow('update:status', 'Finalizing update…');
-        await waitForNativeSquirrelReady(electron, log);
-      }
-
       log.info(`[Updater] Installing v${info.version} on startup…`);
       finish(true);
       await performQuitAndInstall();
@@ -297,10 +300,6 @@ function checkInBackground() {
 
     autoUpdater.once('update-downloaded', async (info) => {
       log.info(`[Updater] Background: v${info.version} downloaded. Prompting user…`);
-
-      if (process.platform === 'darwin') {
-        await waitForNativeSquirrelReady(electron, log);
-      }
 
       const parent =
         BrowserWindow.getFocusedWindow() ||

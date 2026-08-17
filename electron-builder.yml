@@ -117,6 +117,9 @@ linux:
 # otherwise users see the full wizard on every update.
 nsis:
   oneClick: false
+  # Full installer on every update — differential/blockmap patches can leave
+  # extraResources (backend/node_modules/playwright) incomplete on some machines.
+  differentialPackage: false
   allowToChangeInstallationDirectory: true
   allowElevation: true
   createDesktopShortcut: true

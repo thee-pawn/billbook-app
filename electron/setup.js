@@ -10,19 +10,54 @@ const log = require('electron-log');
 // Deleted or absent → setup window runs again on next launch.
 const MARKER_FILE = 'playwright-setup-complete';
 
+function getPlaywrightCliCandidates() {
+  if (app.isPackaged) {
+    const base = path.join(process.resourcesPath, 'backend', 'node_modules');
+    return [
+      path.join(base, 'playwright', 'cli.js'),
+      path.join(base, 'playwright-core', 'cli.js'),
+    ];
+  }
+  return [
+    path.join(__dirname, '../../whatsapp_automation/node_modules/playwright/cli.js'),
+    path.join(__dirname, '../../whatsapp_automation/node_modules/playwright-core/cli.js'),
+  ];
+}
+
 function getPlaywrightCliPath() {
-  return app.isPackaged
-    ? path.join(
-        process.resourcesPath,
-        'backend',
-        'node_modules',
-        'playwright',
-        'cli.js'
-      )
-    : path.join(
-        __dirname,
-        '../../whatsapp_automation/node_modules/playwright/cli.js'
-      );
+  for (const candidate of getPlaywrightCliCandidates()) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return getPlaywrightCliCandidates()[0];
+}
+
+/** Critical bundled files that must exist after install or auto-update. */
+function getRequiredBundledPaths() {
+  if (!app.isPackaged) return [];
+  const base = process.resourcesPath;
+  return [
+    path.join(base, 'backend', 'dist', 'server.js'),
+    path.join(base, 'frontend', 'index.html'),
+  ];
+}
+
+/**
+ * Returns missing bundled paths, or [] when the install looks complete.
+ * Playwright CLI is checked separately via getPlaywrightCliCandidates().
+ */
+function verifyBundledResources() {
+  if (!app.isPackaged) return [];
+
+  const missing = getRequiredBundledPaths().filter((p) => !fs.existsSync(p));
+  const hasPlaywrightCli = getPlaywrightCliCandidates().some((p) => fs.existsSync(p));
+  if (!hasPlaywrightCli) {
+    missing.push(getPlaywrightCliCandidates()[0]);
+  }
+  return missing;
+}
+
+function isBundledResourcesCorrupt() {
+  return verifyBundledResources().length > 0;
 }
 
 /**
@@ -68,6 +103,11 @@ function markSetupComplete() {
  * or bundled Playwright CLI missing (corrupt install).
  */
 function needsSetup() {
+  // Corrupt installs are handled by verifyBundledResources() in main — not here.
+  if (isBundledResourcesCorrupt()) {
+    return false;
+  }
+
   const cli = getPlaywrightCliPath();
   if (!fs.existsSync(cli)) {
     return true;
@@ -154,8 +194,15 @@ function ensurePlaywrightBrowsers(onProgress) {
       onProgress?.('Verifying Playwright package…');
       const cli = getPlaywrightCliPath();
       if (!fs.existsSync(cli)) {
+        const expected = getPlaywrightCliCandidates().join('; ');
+        log.error(
+          `[Setup] Playwright CLI missing. version=${app.getVersion()} resourcesPath=${process.resourcesPath} expected=${expected}`
+        );
+        const repairHint = isSetupComplete()
+          ? ' The app files look incomplete after an update — uninstall BillBookPlus, download the latest installer from GitHub Releases, and reinstall.'
+          : ' Download the latest installer from GitHub Releases and reinstall BillBookPlus.';
         throw new Error(
-          'Playwright is missing from this installation. Reinstall BillBook or contact support.'
+          'Playwright is missing from this installation.' + repairHint
         );
       }
       return installBrowsers(onProgress);
@@ -229,4 +276,6 @@ module.exports = {
   installBrowsers,
   getBrowsersPath,
   getPlaywrightCliPath,
+  verifyBundledResources,
+  isBundledResourcesCorrupt,
 };

@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog } = require('electron');
 const path = require('path');
 const log = require('electron-log');
 
@@ -17,7 +17,7 @@ const {
   closeUpdatingWindow,
 } = require('./updater');
 const { startBackend, stopBackend, getBackendPort } = require('./backend');
-const { needsSetup, ensurePlaywrightBrowsers } = require('./setup');
+const { needsSetup, ensurePlaywrightBrowsers, isBundledResourcesCorrupt, verifyBundledResources } = require('./setup');
 const { attachMainWindowZoom, getDefaultMainWindowSize } = require('./windowZoom');
 
 let mainWindow = null;
@@ -132,7 +132,7 @@ function createMainWindow() {
 // ── First-run setup window ────────────────────────────────────────────────────
 
 function runFirstTimeSetup() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const setupWindow = new BrowserWindow({
       width: 480,
       height: 340,
@@ -173,7 +173,7 @@ function runFirstTimeSetup() {
           }
           setTimeout(() => {
             if (!setupWindow.isDestroyed()) setupWindow.close();
-            resolve();
+            reject(err);
           }, 5000);
         });
     });
@@ -182,39 +182,75 @@ function runFirstTimeSetup() {
 
 // ── App lifecycle ─────────────────────────────────────────────────────────────
 
+function showCorruptInstallDialog(missingPaths) {
+  const detail =
+    'Required application files are missing after install or update. ' +
+    'This usually means the auto-update did not complete fully.\n\n' +
+    'Fix: uninstall BillBookPlus, download the latest installer from GitHub Releases, and reinstall.\n\n' +
+    `Missing: ${missingPaths.slice(0, 3).join('\n')}${missingPaths.length > 3 ? '\n…' : ''}`;
+
+  log.error('[Main] Corrupt install — missing bundled files:', missingPaths);
+
+  try {
+    dialog.showMessageBoxSync({
+      type: 'error',
+      title: 'BillBookPlus Installation Incomplete',
+      message: 'The application files are incomplete.',
+      detail,
+    });
+  } catch (err) {
+    log.warn('[Main] Could not show corrupt-install dialog:', err.message);
+  }
+}
+
 app.whenReady().then(async () => {
   syncAboutPanelFromPackageJson();
 
-  // Step 1 — First-run dependency setup (Playwright Chromium download).
-  if (needsSetup()) {
-    log.info('[Main] Setup required — checking runtime and Playwright browsers.');
-    await runFirstTimeSetup();
-  }
-
-  // Step 2 — Check for app updates BEFORE starting services.
-  // If an update is downloaded, it installs and restarts — we never reach Step 3.
+  // Step 1 — Check for app updates BEFORE setup/backend.
+  // If an update is available it installs and restarts — we never reach later steps.
   const willUpdate = await checkOnStartup();
   if (willUpdate) {
     log.info('[Main] Update in progress — skipping service start.');
     return;
   }
 
-  // Close the updating window if it was briefly shown for a "no update" check.
   closeUpdatingWindow();
 
-  // Step 3 — Show the loading screen while the backend starts.
+  // Step 2 — Verify bundled resources (Playwright, backend, frontend).
+  if (app.isPackaged && isBundledResourcesCorrupt()) {
+    showCorruptInstallDialog(verifyBundledResources());
+    app.quit();
+    return;
+  }
+
+  // Step 3 — First-run Playwright Chromium download (one-time, stored in userData).
+  if (needsSetup()) {
+    log.info('[Main] Setup required — checking runtime and Playwright browsers.');
+    try {
+      await runFirstTimeSetup();
+    } catch (err) {
+      log.error('[Main] Setup failed — cannot start app:', err.message);
+      if (app.isPackaged && isBundledResourcesCorrupt()) {
+        showCorruptInstallDialog(verifyBundledResources());
+      }
+      app.quit();
+      return;
+    }
+  }
+
+  // Step 4 — Show the loading screen while the backend starts.
   createLoadingWindow();
   sendLoadingStatus('Launching backend service…');
 
-  // Step 4 — Start the WhatsApp automation backend child process.
+  // Step 5 — Start the WhatsApp automation backend child process.
   // startBackend() now resolves only when the server is actually ready.
   await startBackend();
 
-  // Step 5 — Backend is up: close loading screen and open the main window.
+  // Step 6 — Backend is up: close loading screen and open the main window.
   closeLoadingWindow();
   createMainWindow();
 
-  // Step 6 — Start periodic background update checks (hourly).
+  // Step 7 — Start periodic background update checks (hourly).
   startPeriodicChecks();
 
   // macOS: recreate window when dock icon is clicked and no windows are open.
